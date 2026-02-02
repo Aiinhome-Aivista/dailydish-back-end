@@ -4,6 +4,7 @@ import random
 import requests
 import os
 import json
+import re
 from functools import lru_cache
 from database.db import get_db_connection 
 
@@ -303,7 +304,7 @@ class IngredientValidator:
         return True, None
 
 # ============================================================================
-# MAIN RECIPE CONTROLLER - FIXED JSON PARSING
+# MAIN RECIPE CONTROLLER - IMPROVED JSON PARSING & PROMPT
 # ============================================================================
 
 validator = IngredientValidator()
@@ -369,40 +370,46 @@ def generate_recipe_controller(user_id, data):
 
     dynamic_limit = random.randint(4, 16)
     
+    # IMPROVED PROMPT - Enforce using provided ingredients as main items
     prompt = f"""
-You are a creative world-class chef.
+You are a creative world-class chef creating recipes based on available ingredients.
 
-INGREDIENTS: {items_list}
+AVAILABLE INGREDIENTS: {items_list}
 CUISINE: {cuisine}
 PEOPLE: {people}
 TIME LIMIT: {cooking_time}
 OCCASION: {preference}
 
-Generate EXACTLY {dynamic_limit} unique recipes using these ingredients.
+Generate EXACTLY {dynamic_limit} unique recipes using ONLY the provided ingredients as the main components.
 
-Rules:
-- Focus on the provided ingredients
-- Match the cuisine and occasion
-- Keep cooking time within limit
-- Be creative and diverse
-- IMPORTANT: Always include 'min' after the cooking_time value (e.g., "20 min")
-- CRITICAL: Return ONLY a valid JSON array, NO nested structures
+STRICT RULES:
+1. MAIN INGREDIENT RULE: The provided ingredients MUST be the PRIMARY components of each dish
+   - Example: If given "Tea Leaf", create tea beverages (chai, green tea), NOT tea-infused rice or samosas
+   - Example: If given "Eggplant, Turmeric", create eggplant dishes with turmeric seasoning
+   - DO NOT add major ingredients that weren't provided (like rice, chicken, vegetables if not listed)
 
-Output format (STRICT):
+2. You may use common pantry items for cooking/seasoning (oil, salt, water, basic spices)
+3. Each recipe must realistically use the provided ingredients as the main focus
+4. Match the cuisine style and occasion
+5. Keep cooking time within the limit
+6. IMPORTANT: Always include 'min' after cooking_time (e.g., "20 min")
+7. CRITICAL: Return ONLY a valid JSON array - NO markdown, NO nested objects, NO extra text
+
+VALID OUTPUT FORMAT (STRICT):
 [
   {{
-    "menu_name": "Dish Name",
-    "description": "Brief 2-3 line description",
-    "cooking_time": "Time in minutes (must end with 'min')"
+    "menu_name": "Dish Name Using Main Ingredients",
+    "description": "Brief 2-3 line description showing how the provided ingredients are used",
+    "cooking_time": "20 min"
   }},
   {{
-    "menu_name": "Another Dish",
-    "description": "Brief description",
+    "menu_name": "Another Dish with Main Ingredients",
+    "description": "Clear description of the dish",
     "cooking_time": "25 min"
   }}
 ]
 
-DO NOT wrap in any other object. DO NOT use nested arrays. Just return the array directly.
+IMPORTANT: Return ONLY the JSON array above. No markdown code blocks, no extra text, no nested structures.
 """
 
     api_url = os.getenv("MISTRAL_API_URL")
@@ -437,37 +444,56 @@ DO NOT wrap in any other object. DO NOT use nested arrays. Just return the array
             print(" AI returned empty response")
             return {"status": "error", "message": "AI returned empty content."}, 500
 
-        # ROBUST JSON CLEANING
+        # ULTRA-ROBUST JSON CLEANING
         raw_content = raw_content.strip()
         
         # Remove markdown code blocks
         if raw_content.startswith('```'):
-            raw_content = raw_content.split('```json')[-1].split('```')[0].strip()
+            lines = raw_content.split('\n')
+            clean_lines = [line for line in lines if not line.strip().startswith('```')]
+            raw_content = '\n'.join(clean_lines).strip()
         
-        print(f" AI Response (first 200 chars): {raw_content[:200]}")
+        # Remove any text before first [ and after last ]
+        first_bracket = raw_content.find('[')
+        last_bracket = raw_content.rfind(']')
+        
+        if first_bracket != -1 and last_bracket != -1:
+            raw_content = raw_content[first_bracket:last_bracket+1]
+        
+        print(f" AI Response (first 300 chars): {raw_content[:300]}")
         
         # Try to parse
         try:
             recipes_data = json.loads(raw_content)
         except json.JSONDecodeError as je:
-            # FALLBACK: Try to extract array from malformed JSON
-            print(f" Initial JSON parse failed: {str(je)}")
-            print(" Attempting to extract valid JSON array...")
+            # FALLBACK 1: Remove URLs and markdown links
+            print(f" JSON parse failed: {str(je)}")
+            print(" Attempting to clean markdown links and URLs...")
             
-            # Find first [ and last ]
-            start_idx = raw_content.find('[')
-            end_idx = raw_content.rfind(']')
+            # Remove markdown links like [text](url)
+            cleaned = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', raw_content)
             
-            if start_idx != -1 and end_idx != -1:
-                array_content = raw_content[start_idx:end_idx+1]
-                try:
-                    recipes_data = json.loads(array_content)
-                    print(" Successfully extracted array from malformed JSON")
-                except:
-                    print(" Could not extract valid JSON")
-                    return {"status": "error", "message": "AI returned invalid JSON format."}, 500
-            else:
-                return {"status": "error", "message": "AI returned invalid JSON format."}, 500
+            # Try parsing again
+            try:
+                recipes_data = json.loads(cleaned)
+                print(" Successfully parsed after removing markdown links")
+            except json.JSONDecodeError:
+                # FALLBACK 2: Try to extract just the array portion
+                print(" Still failing, trying array extraction...")
+                start_idx = cleaned.find('[')
+                end_idx = cleaned.rfind(']')
+                
+                if start_idx != -1 and end_idx != -1:
+                    array_content = cleaned[start_idx:end_idx+1]
+                    try:
+                        recipes_data = json.loads(array_content)
+                        print(" Successfully extracted array")
+                    except:
+                        print(" CRITICAL: Could not parse JSON at all")
+                        print(f"Raw content sample: {raw_content[:500]}")
+                        return {"status": "error", "message": "AI returned unparseable format. Please try again."}, 500
+                else:
+                    return {"status": "error", "message": "AI returned invalid format. Please try again."}, 500
 
         # HANDLE DIFFERENT JSON STRUCTURES
         recipes = None
@@ -480,50 +506,65 @@ DO NOT wrap in any other object. DO NOT use nested arrays. Just return the array
         # Case 2: Dict with known keys
         elif isinstance(recipes_data, dict):
             # Try common keys
-            for key in ["recipes", "Recipes", "data", "Data", "items", "Items"]:
+            for key in ["recipes", "Recipes", "data", "Data", "items", "Items", "menu"]:
                 if key in recipes_data:
                     recipes = recipes_data[key]
                     print(f" Format: Dict with key '{key}'")
                     break
             
-            # If still not found, take first list value
+            # If still not found, check if dict values contain a list
             if not recipes:
-                for value in recipes_data.values():
-                    if isinstance(value, list):
-                        recipes = value
-                        print(" Format: Dict with unnamed list value")
-                        break
+                for key, value in recipes_data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        # Check if the list contains dict items (actual recipes)
+                        if isinstance(value[0], dict) and 'menu_name' in value[0]:
+                            recipes = value
+                            print(f" Format: Dict with list in key '{key}'")
+                            break
+                        # Skip if it's a list of strings/other data
         
         # Validation
         if not isinstance(recipes, list) or len(recipes) == 0:
-            print(" AI returned invalid format")
-            print(f"Full response: {json.dumps(recipes_data, indent=2)}")
-            return {"status": "error", "message": "AI did not generate valid recipes."}, 500
+            print(" AI returned invalid format - no valid recipe list found")
+            print(f"Full response structure: {type(recipes_data)}")
+            print(f"Keys if dict: {list(recipes_data.keys()) if isinstance(recipes_data, dict) else 'N/A'}")
+            return {"status": "error", "message": "AI did not generate valid recipes. Please try again."}, 500
 
         # CLEAN RECIPE ITEMS - Handle both dict and nested array formats
         cleaned_recipes = []
-        for item in recipes:
+        for idx, item in enumerate(recipes):
             if isinstance(item, dict):
-                # Normal dict format
-                cleaned_recipes.append(item)
+                # Normal dict format - ensure it has required fields
+                if 'menu_name' in item or 'name' in item:
+                    cleaned_item = {
+                        "menu_name": item.get('menu_name') or item.get('name', f'Recipe {idx+1}'),
+                        "description": item.get('description', 'A delicious dish'),
+                        "cooking_time": item.get('cooking_time', '30 min')
+                    }
+                    cleaned_recipes.append(cleaned_item)
+                else:
+                    print(f" Skipping dict without name: {item}")
+                    
             elif isinstance(item, list) and len(item) >= 2:
                 # Nested array format: ["Name", {"description": ..., "cooking_time": ...}]
-                name = item[0]
+                name = str(item[0]) if item[0] else f'Recipe {idx+1}'
                 details = item[1] if isinstance(item[1], dict) else {}
                 cleaned_recipes.append({
                     "menu_name": name,
-                    "description": details.get("description", ""),
+                    "description": details.get("description", "A delicious dish"),
                     "cooking_time": details.get("cooking_time", "30 min")
                 })
             else:
                 # Skip invalid items
-                print(f" Skipping invalid recipe item: {item}")
+                print(f" Skipping invalid recipe item at index {idx}: {type(item)}")
                 continue
 
         recipes = cleaned_recipes
         
         if len(recipes) == 0:
-            return {"status": "error", "message": "No valid recipes could be extracted."}, 500
+            return {"status": "error", "message": "No valid recipes could be extracted. Please try again."}, 500
+
+        print(f" Successfully cleaned {len(recipes)} recipes")
 
         # Add images
         for recipe in recipes:
@@ -570,9 +611,9 @@ DO NOT wrap in any other object. DO NOT use nested arrays. Just return the array
         if conn: conn.close()
         print(f" JSON decode error: {str(je)}")
         print(f"Raw content: {raw_content[:500]}")
-        return {"status": "error", "message": "AI returned invalid JSON format."}, 500
+        return {"status": "error", "message": "AI returned invalid JSON format. Please try again."}, 500
     
     except Exception as e:
         if conn: conn.close()
         print(f" Error: {str(e)}")
-        return {"status": "error", "message": f"AI Analysis failed: {str(e)}"}, 500
+        return {"status": "error", "message": f"Recipe generation failed: {str(e)}"}, 500
