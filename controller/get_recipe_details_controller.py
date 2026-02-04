@@ -8,7 +8,7 @@ def calculate_suitability(nutrition_data, dish_info):
     Scientific suitability calculation based on nutritional content
     Returns: {"child": percentage, "adult": percentage, "senior": percentage}
     """
-    try:
+    try: 
         # Extract numerical values from nutrition data
         def extract_number(value_str):
             import re

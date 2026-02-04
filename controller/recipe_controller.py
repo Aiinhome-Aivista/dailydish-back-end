@@ -605,4 +605,4 @@ CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before 
     except Exception as e:
         if conn: conn.close()
         print(f" Error: {str(e)}")
-        return {"status": "error", "message": f"Recipe generation failed: {str(e)}"}, 500
+        return {"status": "error", "message": f"Recipe generation failed: {str(e)}"}, 500 

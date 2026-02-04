@@ -1172,7 +1172,7 @@ Respond with only valid JSON, no other text."""
             if match:
                 return int(match.group(1))
         
-        return None
+        return None 
     
     def extract_preference(self, text: str) -> Optional[str]:
         """Extract cooking preference"""
