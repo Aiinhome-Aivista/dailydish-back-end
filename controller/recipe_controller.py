@@ -368,48 +368,32 @@ def generate_recipe_controller(user_id, data):
         except Exception as db_err:
             print(f"Database Error (user_queries): {str(db_err)}")
 
-    dynamic_limit = random.randint(4, 16)
+    # Generate 1-3 recipes
+    dynamic_limit = random.randint(1, 3)
     
-    # IMPROVED PROMPT - Enforce using provided ingredients as main items
+    # SUPER STRICT PROMPT - Force array output
     prompt = f"""
-You are a creative world-class chef creating recipes based on available ingredients.
+Create EXACTLY {dynamic_limit} different recipes using ONLY these ingredients: {items_list}
 
-AVAILABLE INGREDIENTS: {items_list}
 CUISINE: {cuisine}
 PEOPLE: {people}
-TIME LIMIT: {cooking_time}
+TIME: {cooking_time}
 OCCASION: {preference}
 
-Generate EXACTLY {dynamic_limit} unique recipes using ONLY the provided ingredients as the main components.
+RULES:
+1. Create EXACTLY {dynamic_limit} recipes (different cooking methods: baked, pan-fried, steamed, grilled, etc.)
+2. Use ONLY listed ingredients - NO oil, water, butter unless listed
+3. NO "if available", "optional", or extra ingredients
+4. Each recipe must be unique
 
-STRICT RULES:
-1. MAIN INGREDIENT RULE: The provided ingredients MUST be the PRIMARY components of each dish
-   - Example: If given "Tea Leaf", create tea beverages (chai, green tea), NOT tea-infused rice or samosas
-   - Example: If given "Eggplant, Turmeric", create eggplant dishes with turmeric seasoning
-   - DO NOT add major ingredients that weren't provided (like rice, chicken, vegetables if not listed)
-
-2. You may use common pantry items for cooking/seasoning (oil, salt, water, basic spices)
-3. Each recipe must realistically use the provided ingredients as the main focus
-4. Match the cuisine style and occasion
-5. Keep cooking time within the limit
-6. IMPORTANT: Always include 'min' after cooking_time (e.g., "20 min")
-7. CRITICAL: Return ONLY a valid JSON array - NO markdown, NO nested objects, NO extra text
-
-VALID OUTPUT FORMAT (STRICT):
+Return a JSON array with {dynamic_limit} objects. Example for 3 recipes:
 [
-  {{
-    "menu_name": "Dish Name Using Main Ingredients",
-    "description": "Brief 2-3 line description showing how the provided ingredients are used",
-    "cooking_time": "20 min"
-  }},
-  {{
-    "menu_name": "Another Dish with Main Ingredients",
-    "description": "Clear description of the dish",
-    "cooking_time": "25 min"
-  }}
+  {{"menu_name": "Pan-Seared Chicken with Potatoes", "description": "Chicken and potatoes cooked together with cumin and salt", "cooking_time": "30 min"}},
+  {{"menu_name": "Baked Cumin Chicken", "description": "Oven-baked chicken seasoned with cumin and salt, served with potatoes", "cooking_time": "40 min"}},
+  {{"menu_name": "Simple Chicken Potato Hash", "description": "Diced chicken and potatoes pan-cooked with cumin", "cooking_time": "25 min"}}
 ]
 
-IMPORTANT: Return ONLY the JSON array above. No markdown code blocks, no extra text, no nested structures.
+CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before or after.
 """
 
     api_url = os.getenv("MISTRAL_API_URL")
@@ -419,11 +403,10 @@ IMPORTANT: Return ONLY the JSON array above. No markdown code blocks, no extra t
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "format": "json",
         "options": {
-            "temperature": 0.7,
+            "temperature": 0.8,
             "top_p": 0.9,
-            "num_predict": 3000
+            "num_predict": 4000
         }
     }
 
@@ -505,23 +488,29 @@ IMPORTANT: Return ONLY the JSON array above. No markdown code blocks, no extra t
         
         # Case 2: Dict with known keys
         elif isinstance(recipes_data, dict):
-            # Try common keys
-            for key in ["recipes", "Recipes", "data", "Data", "items", "Items", "menu"]:
-                if key in recipes_data:
-                    recipes = recipes_data[key]
-                    print(f" Format: Dict with key '{key}'")
-                    break
-            
-            # If still not found, check if dict values contain a list
-            if not recipes:
-                for key, value in recipes_data.items():
-                    if isinstance(value, list) and len(value) > 0:
-                        # Check if the list contains dict items (actual recipes)
-                        if isinstance(value[0], dict) and 'menu_name' in value[0]:
-                            recipes = value
-                            print(f" Format: Dict with list in key '{key}'")
-                            break
-                        # Skip if it's a list of strings/other data
+            # FIX: Check if this is a SINGLE RECIPE object (has menu_name, description, cooking_time)
+            if 'menu_name' in recipes_data or 'description' in recipes_data or 'cooking_time' in recipes_data:
+                # AI returned a single recipe dict instead of array - wrap it
+                recipes = [recipes_data]
+                print(f" Format: Single recipe dict - wrapped into array")
+            else:
+                # Try common keys
+                for key in ["recipes", "Recipes", "data", "Data", "items", "Items", "menu"]:
+                    if key in recipes_data:
+                        recipes = recipes_data[key]
+                        print(f" Format: Dict with key '{key}'")
+                        break
+                
+                # If still not found, check if dict values contain a list
+                if not recipes:
+                    for key, value in recipes_data.items():
+                        if isinstance(value, list) and len(value) > 0:
+                            # Check if the list contains dict items (actual recipes)
+                            if isinstance(value[0], dict) and 'menu_name' in value[0]:
+                                recipes = value
+                                print(f" Format: Dict with list in key '{key}'")
+                                break
+                            # Skip if it's a list of strings/other data
         
         # Validation
         if not isinstance(recipes, list) or len(recipes) == 0:
