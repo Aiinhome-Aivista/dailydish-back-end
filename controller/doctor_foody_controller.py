@@ -55,7 +55,7 @@ class DoctorFoodyController:
 #                 result = response.json()
 #                 corrected = result.get('response', '').strip()
 #                 if corrected and len(corrected) < len(text) * 2:
-#                     print(f"  🔧 Spelling: '{text}' → '{corrected}'")
+#                     print(f"   Spelling: '{text}' → '{corrected}'")
 #                     return corrected
 #         except Exception as e:
 #             print(f"   Spelling fix failed: {e}")
@@ -220,7 +220,7 @@ class DoctorFoodyController:
         
         # FALLBACK: Use LLM only if regex found NOTHING
         if len(ingredients) == 0 and self._is_noisy_input(text):
-            print(f"  🤖 Using LLM to extract from noisy input...")
+            print(f"  Using LLM to extract from noisy input...")
             llm_ingredients = self._extract_with_llm(text)
             
             for llm_ing in llm_ingredients:
@@ -728,7 +728,9 @@ Term: "{name}"
         Update unclear quantities from user input
         Handles all variations: "spinach 100g", "200g paneer", "100 gram onion", etc.
         
-        ENHANCED: Now handles mixed formats like "spinach 100g and 200g paneer"
+        ENHANCED: Now handles:
+        1. Named format: "spinach 100g and 200g paneer"
+        2. Sequence format: "100g, 2pieces, 1cup" (matches order of unclear ingredients)
         """
         text_lower = text.lower()
         
@@ -736,6 +738,41 @@ Term: "{name}"
         text_lower = re.sub(r'(\d)o+(?=g(?!o)|gm|kg|ml|l(?!o)|cup)', r'\g<1>00', text_lower)
         text_lower = re.sub(r'(\d)o+\s+(?=g(?!o)|gm|kg|ml|l(?!o)|cup)', r'\g<1>00 ', text_lower)
         
+        # Get unclear ingredients only
+        unclear_ings = [ing for ing in ingredients if ing.get('unclear')]
+        
+        # Check if this is SEQUENCE-BASED input (just quantities without ingredient names)
+        # Extract all standalone quantities
+        standalone_qtys = []
+        for match in re.finditer(r'(\d+(?:\.\d+)?)\s*(g|gm|kg|kgs|ml|l|ltr|litre|litres?|cup|cups|glass|piece|pieces|peace|peaces|pics?|pcs?|spoon|spoons|tbsp|tsp)?(?:\s*[,\s]|$)', text_lower):
+            qty_num = match.group(1)
+            unit = match.group(2) if match.group(2) else "pieces"
+            standalone_qtys.append(self._format_qty(qty_num, unit))
+        
+        # Check if input is sequence-based (no ingredient names detected)
+        has_ingredient_names = False
+        for ing in unclear_ings:
+            ing_lower = ing['name'].lower().replace('_', ' ')
+            if ing_lower in text_lower or ing['name'].lower() in text_lower:
+                has_ingredient_names = True
+                break
+        
+        # If sequence-based input detected
+        if not has_ingredient_names and len(standalone_qtys) > 0:
+            print(f"  Sequence-based input detected: {len(standalone_qtys)} quantities for {len(unclear_ings)} unclear ingredients")
+            updated = []
+            for ing in ingredients:
+                if ing.get('unclear'):
+                    # Find index in unclear list
+                    unclear_idx = unclear_ings.index(ing)
+                    if unclear_idx < len(standalone_qtys):
+                        ing['qty'] = standalone_qtys[unclear_idx]
+                        ing['unclear'] = False
+                        print(f"  ✓ Updated '{ing['name']}': {standalone_qtys[unclear_idx]} (sequence position {unclear_idx+1})")
+                updated.append(ing)
+            return updated
+        
+        # NAMED-BASED: Normal matching with ingredient names
         updated = []
         
         for ing in ingredients:
@@ -1160,17 +1197,24 @@ Respond with only valid JSON, no other text."""
         return None
     
     def extract_people(self, text: str) -> Optional[int]:
-        """Extract number of people"""
+        """Extract number of people - accepts both '2 people' and just '2'"""
+        text_lower = text.lower().strip()
+        
         patterns = [
             r'for\s+(\d+)\s+(?:people|person)',
             r'(\d+)\s+(?:people|person)',
-            r'serve\s+(\d+)'
+            r'serve\s+(\d+)',
+            r'^(\d+)$',  # Just a number, e.g., "2" or "4"
+            r'^(\d+)\s*$'  # Number with optional whitespace
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
+            match = re.search(pattern, text_lower, re.IGNORECASE)
             if match:
-                return int(match.group(1))
+                num = int(match.group(1))
+                # Reasonable range check (1-50 people)
+                if 1 <= num <= 50:
+                    return num
         
         return None 
     
@@ -1197,9 +1241,9 @@ Respond with only valid JSON, no other text."""
             unclear = [ing for ing in collected['ingredients'] if ing.get('unclear')]
             if unclear:
                 missing.append('unclear_quantities')
-            # Check if user has provided spices
-            # FIXED: Check _spices_provided (set when user actually provides spices)
-            elif not collected.get('_spices_provided') and not self._has_spices_in_ingredients(collected['ingredients']):
+            # ALWAYS ask for spices (even if user added spices in ingredients)
+            # Only skip if user explicitly answered the spices question
+            elif not collected.get('_spices_provided'):
                 missing.append('spices')
                 return missing
         
@@ -1221,7 +1265,7 @@ Respond with only valid JSON, no other text."""
                 del collected['_pending_spice_suggestions']
                 
                 missing = self.check_missing(collected)
-                msg = f"✅ Added: {', '.join(spices)}!\n\n"
+                msg = f" Added: {', '.join(spices)}!\n\n"
                 if not missing:
                     msg += self.format_summary(collected)
                 else:
@@ -1244,7 +1288,7 @@ Respond with only valid JSON, no other text."""
                 return {
                     "status": "success",
                     "bot_name": "Doctor Foody",
-                    "message": "⚠️ Continuing without spices!\n\n" + self.next_question(missing, collected),
+                    "message": " Continuing without spices!\n\n" + self.next_question(missing, collected),
                     "collected_data": collected,
                     "missing_fields": missing
                 }, 200
@@ -1267,7 +1311,7 @@ Respond with only valid JSON, no other text."""
                     
                     missing = self.check_missing(collected)
                     spice_names = [s['name'] for s in selected_spices]
-                    msg = f"✅ Added: {', '.join(spice_names)}!\n\n"
+                    msg = f" Added: {', '.join(spice_names)}!\n\n"
                     if not missing:
                         msg += self.format_summary(collected)
                     else:
@@ -1307,7 +1351,7 @@ Respond with only valid JSON, no other text."""
             return " Hi, I'm doctor foodie ! What ingredients do you have?\n Example: '2 pieces katla fish, 1cup rice, 100g onion'"
         
         elif field == 'spices':
-            return " what spices do you have or do you want to add any spices ?\n Example: 'turmeric, cumin, salt, red chili powder'"
+            return " What spices do you have or do you want to add any spices?\n Example: 'turmeric, cumin, salt, red chili powder' or type 'no' to skip"
         
         elif field == 'unclear_quantities':
             unclear = [ing['name'] for ing in collected['ingredients'] if ing.get('unclear')]
@@ -1405,7 +1449,7 @@ Respond with only valid JSON, no other text."""
                 return {
                     "status": "success",
                     "bot_name": "Doctor Foody",
-                    "message": "🎉 Here are your delicious recipes!",
+                    "message": " Here are your delicious recipes!",
                     "data": recipe_list,
                     "collected_data": {},
                     "missing_fields": []
@@ -1577,17 +1621,33 @@ Respond with only valid JSON, no other text."""
         
         new_ings = self.extract_ingredients(message)
         if new_ings:
+            # Check if user is currently on spices question (has ingredients but not spices)
             if collected.get('ingredients'):
                 collected['ingredients'] = self.merge_ingredients(collected['ingredients'], new_ings)
             else:
                 collected['ingredients'] = new_ings
             
-            # Mark that user provided spices if they added spice ingredients
-            if self._has_spices_in_ingredients(new_ings):
+            # DO NOT set _spices_provided automatically
+            # Only set when user explicitly responds to spices question
+        
+        # Handle spices question response
+        # Check if previous bot message was asking for spices
+        chat_history = data.get('chat_history', [])
+        if chat_history and len(chat_history) > 0:
+            last_bot_msg = None
+            for msg in reversed(chat_history):
+                if msg.get('role') == 'assistant':
+                    last_bot_msg = msg.get('content', '')
+                    break
+            
+            # If last question was about spices and user responded
+            if last_bot_msg and 'what spices' in last_bot_msg.lower():
+                # User is responding to spices question - mark as provided
                 collected['_spices_provided'] = True
         
-        # NEW: Handle "no spices" response
+        # Handle "no spices" response
         missing = self.check_missing(collected)
+        
         if 'spices' in missing and intent == 'skip_suggestions':
             # User said "no spices" - check if recipe is possible
             feasibility = self.check_recipe_feasibility_without_spices(collected['ingredients'])
@@ -1598,7 +1658,7 @@ Respond with only valid JSON, no other text."""
                 reason = feasibility.get('reason', 'Basic seasonings are needed for a tasty dish')
                 
                 msg = (
-                    f"🤔 {reason}\n\n"
+                    f" {reason}\n\n"
                     f"**Minimum suggested spices:**\n"
                     f"• {', '.join(sugg_spices)}\n\n"
                     f"Would you like to add these? (type 'yes' to add all, or specific ones like 'salt, oil')\n"
