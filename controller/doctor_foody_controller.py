@@ -1165,6 +1165,7 @@ Respond with only valid JSON, no other text."""
             'italian': 'Italian',
             'french': 'French',
             'greek': 'Greek',
+            'mediterranean': 'Mediterranean',
             'thai': 'Thai',
             'chinese': 'Chinese',
             'japanese': 'Japanese',
@@ -1186,7 +1187,7 @@ Respond with only valid JSON, no other text."""
             ('Central Asian', ['central asian', 'central', 'middle eastern', 'uzbek']),
             ('Inter-Continental', ['inter-continental', 'intercontinental', 'inter continental', 'fusion', 'international', 'mixed', 'global']),
             ('Indian-Sub', ['indian-sub', 'indian', 'desi', 'south asian']),
-            ('European', ['european', 'mediterranean']),
+            ('European', ['european']),
             ('Oriental', ['oriental', 'asian']),
         ]
         
@@ -1765,9 +1766,12 @@ Respond with only valid JSON, no other text."""
                 }, 200
             
             elif 'change' in message_lower or any(alt.lower() in message_lower for alt in collected['_cuisine_not_feasible'].get('alternatives', [])):
-                # User wants to change cuisine
+                # User wants to change cuisine - extract the new cuisine from message
+                new_cuisine = self.extract_cuisine(message)
+                if new_cuisine:
+                    collected['cuisine_preference'] = new_cuisine
                 del collected['_cuisine_not_feasible']
-                # Let normal cuisine extraction handle it
+                # Continue to next question
         
         if not collected.get('number_of_people'):
             people = self.extract_people(message)
