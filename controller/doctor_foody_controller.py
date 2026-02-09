@@ -15,6 +15,11 @@ class DoctorFoodyController:
     Self-learning compound ingredient detection
     Production-ready scalability
     Enhanced quantity update handling for mixed formats
+    
+    FIXES:
+    1. Fixed compound ingredient detection (bhetki fish, coriander powder)
+    2. Fixed cuisine flow - no re-asking after adding suggested items
+    3. Added smart oil/sauce type specification
     """
     
     def __init__(self):
@@ -27,91 +32,35 @@ class DoctorFoodyController:
         
         # Dynamically detected compound ingredients (learned during runtime)
         self._detected_compounds = set()
-
-    # ==================== NEW: SPELLING CORRECTION ====================
-    
-#     def _fix_spelling_llm(self, text: str) -> str:
-#         """
-#         NEW: Fix spelling errors using LLM
-#         Example: "chiken" → "chicken", "tamoto" → "tomato", "brokoli" → "broccoli"
-#         """
-#         try:
-#             prompt = f"""Fix ONLY spelling errors in food text. Keep numbers/units unchanged.
-
-# Text: {text}
-
-# Return ONLY corrected text."""
-
-#             payload = {
-#                 "model": self.llm_model,
-#                 "prompt": prompt,
-#                 "stream": False,
-#                 "options": {"temperature": 0.1, "num_predict": 100}
-#             }
-            
-#             response = requests.post(self.llm_api_url, json=payload, timeout=5)
-            
-#             if response.status_code == 200:
-#                 result = response.json()
-#                 corrected = result.get('response', '').strip()
-#                 if corrected and len(corrected) < len(text) * 2:
-#                     print(f"   Spelling: '{text}' → '{corrected}'")
-#                     return corrected
-#         except Exception as e:
-#             print(f"   Spelling fix failed: {e}")
         
-#         return text
-    
+        # FIXED: Pre-define common compound ingredients that should NEVER be split
+        self._common_compounds = {
+            'bhetki fish', 'katla fish', 'rohu fish', 'hilsa fish', 'pomfret fish',
+            'chicken breast', 'chicken thigh', 'chicken leg', 'chicken wings',
+            'fish fillet', 'fish head', 'fish tail',
+            'coriander powder', 'cumin powder', 'chili powder', 'turmeric powder',
+            'garam masala', 'curry powder', 'five spice',
+            'mustard oil', 'olive oil', 'sesame oil', 'coconut oil', 'sunflower oil', 'soybean oil',
+            'soy sauce', 'fish sauce', 'tomato sauce', 'chili sauce',
+            'coconut milk', 'coconut cream',
+            'bay leaf', 'curry leaf',
+            'green chili', 'red chili',
+            'bitter gourd', 'bottle gourd', 'ridge gourd', 'snake gourd',
+            'spring onion', 'green onion',
+            'black pepper', 'white pepper',
+            'kidney beans', 'black beans', 'green beans'
+        }
 
-#     # ==================== NEW: SPELLING CORRECTION ====================
-    
-#     def _fix_spelling_llm(self, text: str) -> str:
-#         """
-#         NEW FEATURE: Fix spelling errors using LLM
-#         Example: "chiken" → "chicken", "tamoto" → "tomato", "brokoli" → "broccoli"
-#         """
-#         try:
-#             prompt = f"""Fix ONLY spelling errors in food ingredient text. Keep numbers/units unchanged.
-
-# Text: {text}
-
-# Return ONLY corrected text, no explanation."""
-
-#             payload = {
-#                 "model": self.llm_model,
-#                 "prompt": prompt,
-#                 "stream": False,
-#                 "options": {"temperature": 0.1, "num_predict": 100}
-#             }
-            
-#             response = requests.post(self.llm_api_url, json=payload, timeout=800)
-            
-#             if response.status_code == 200:
-#                 result = response.json()
-#                 corrected = result.get('response', '').strip()
-#                 # Safety: only return if reasonable length
-#                 if corrected and len(corrected) < len(text) * 2:
-#                     print(f"   Spelling: '{text}' → '{corrected}'")
-#                     return corrected
-#         except Exception as e:
-#             print(f"   Spelling fix failed: {e}")
-        
-#         return text  # Return original on failure
-    
-    
     # ==================== SMART INGREDIENT EXTRACTION ====================
     
     def extract_ingredients(self, text: str) -> List[Dict]:
         """
         Fully dynamic ingredient extraction
         No hardcoded lists - uses patterns and LLM validation
+        
+        FIXED: Better compound ingredient detection
         """
         ingredients = []
-        # # NEW: Fix spelling errors first
-        # text = self._fix_spelling_llm(text)
-        
-        # # NEW: Fix spelling first
-        # text = self._fix_spelling_llm(text)
         
         text_lower = text.lower()
         
@@ -123,7 +72,7 @@ class DoctorFoodyController:
         text_lower = re.sub(r'(\d)o+(?=g(?!o)|gm|kg|ml|l(?!o)|cup)', r'\g<1>00', text_lower)
         text_lower = re.sub(r'(\d)o+\s+(?=g(?!o)|gm|kg|ml|l(?!o)|cup)', r'\g<1>00 ', text_lower)
         
-        # Dynamically detect and preserve compound ingredients
+        # FIXED: Dynamically detect and preserve compound ingredients (improved)
         text_lower = self._preserve_compound_ingredients(text_lower)
         
         found_items = set()
@@ -220,7 +169,7 @@ class DoctorFoodyController:
         
         # FALLBACK: Use LLM only if regex found NOTHING
         if len(ingredients) == 0 and self._is_noisy_input(text):
-            print(f"  Using LLM to extract from noisy input...")
+            print(f" Using LLM to extract from noisy input...")
             llm_ingredients = self._extract_with_llm(text)
             
             for llm_ing in llm_ingredients:
@@ -232,29 +181,40 @@ class DoctorFoodyController:
     
     def _preserve_compound_ingredients(self, text: str) -> str:
         """
-        Dynamically detect compound ingredients using LLM
-        Example: "bitter gourd" should stay together
+        FIXED: Dynamically detect compound ingredients using LLM + pre-defined list
+        Example: "bitter gourd" should stay together, "bhetki fish" should stay together
         """
-        # Check cache first
-        if text in self._detected_compounds:
-            return text
+        # FIRST: Check pre-defined common compounds and replace with underscores
+        for compound in self._common_compounds:
+            if compound in text:
+                text = text.replace(compound, compound.replace(' ', '_'))
+                print(f" Pre-defined compound preserved: '{compound}' → '{compound.replace(' ', '_')}'")
         
-        # Find potential two-word combinations
+        # THEN: Check cache for previously detected compounds
+        for detected in self._detected_compounds:
+            if detected in text:
+                text = text.replace(detected, detected.replace(' ', '_'))
+        
+        # FINALLY: Find potential two-word combinations not yet cached
         two_word_pattern = r'\b([a-z]+)\s+([a-z]+)\b'
         matches = re.findall(two_word_pattern, text)
         
         for word1, word2 in matches:
             compound = f"{word1} {word2}"
             
-            # Skip if already detected
-            if compound in self._detected_compounds:
-                text = text.replace(compound, compound.replace(' ', '_'))
+            # Skip if already processed
+            if compound in self._common_compounds or compound in self._detected_compounds:
+                continue
+            
+            # Skip if it has underscore (already processed)
+            if '_' in compound:
                 continue
             
             # Use LLM to check if it's a compound ingredient
             if self._is_compound_ingredient(compound):
                 self._detected_compounds.add(compound)
                 text = text.replace(compound, compound.replace(' ', '_'))
+                print(f"  ✓ LLM detected compound: '{compound}' → '{compound.replace(' ', '_')}'")
         
         return text
     
@@ -305,6 +265,8 @@ Respond with JSON:
   "suggested_spices": ["salt", "oil", "pepper"] // empty array if possible without spices, or minimal spices needed if not possible
 }}
 
+CRITICAL: For oil, suggest ONLY "oil" (NOT "mustard oil", "olive oil", etc.)
+
 Examples:
 - "200g paneer, 1 broccoli" → {{"possible": false, "reason": "Needs at least salt and oil for flavor", "suggested_spices": ["salt", "oil"]}}
 - "2 eggs, 100g cheese, 50g butter" → {{"possible": true, "reason": "Can make omelet without additional spices", "suggested_spices": []}}
@@ -322,7 +284,7 @@ Examples:
             response = requests.post(self.llm_api_url, json=payload, timeout=850)
             
             if response.status_code != 200:
-                print(f"   Feasibility check failed: {response.status_code}")
+                print(f" Feasibility check failed: {response.status_code}")
                 return {"possible": True, "suggested_spices": [], "reason": ""}
             
             result = response.json()
@@ -337,12 +299,12 @@ Examples:
             
             feasibility = json.loads(raw_content)
             
-            print(f"   Recipe feasibility: {feasibility.get('possible')}, Suggested: {feasibility.get('suggested_spices', [])}")
+            print(f" Recipe feasibility: {feasibility.get('possible')}, Suggested: {feasibility.get('suggested_spices', [])}")
             
             return feasibility
             
         except Exception as e:
-            print(f"   Feasibility check error: {str(e)}")
+            print(f" Feasibility check error: {str(e)}")
             return {"possible": True, "suggested_spices": [], "reason": ""}
 
     
@@ -350,16 +312,23 @@ Examples:
         """
         Use LLM to determine if a two-word phrase is a compound ingredient
         """
+        # FIXED: Check pre-defined compounds first
+        if phrase in self._common_compounds:
+            return True
+        
         # Quick heuristic checks first
         # Common patterns that are likely compounds
         common_patterns = [
-            r'\b(olive|mustard|sesame|coconut|vegetable|sunflower)\s+(oil)\b',
+            r'\b(olive|mustard|sesame|coconut|vegetable|sunflower|soybean)\s+(oil)\b',
             r'\b(bitter|sweet|bell)\s+(gourd|potato|pepper|melon)\b',
             r'\b(green|black|kidney|soy)\s+(beans?|sauce)\b',
             r'\b(spring|green)\s+(onion)\b',
             r'\b(curry|bay)\s+(leaf|leaves)\b',
             r'\b(coconut)\s+(milk|cream)\b',
-            r'\b(fish|soy)\s+(sauce)\b',
+            r'\b(fish|soy|tomato|chili)\s+(sauce)\b',
+            r'\b(bhetki|katla|rohu|hilsa|pomfret)\s+(fish)\b',
+            r'\b(coriander|cumin|chili|turmeric)\s+(powder)\b',
+            r'\b(chicken)\s+(breast|thigh|leg|wings?)\b',
         ]
         
         for pattern in common_patterns:
@@ -381,6 +350,8 @@ Examples:
 "want to" -> {{"is_compound": false}}
 "olive oil" -> {{"is_compound": true}}
 "cook with" -> {{"is_compound": false}}
+"bhetki fish" -> {{"is_compound": true}}
+"coriander powder" -> {{"is_compound": true}}
 
 Phrase: "{phrase}"
 """
@@ -406,7 +377,7 @@ Phrase: "{phrase}"
                     return is_compound
         
         except Exception as e:
-            print(f"  Compound detection error: {str(e)}")
+            print(f" Compound detection error: {str(e)}")
         
         # Default: not a compound
         return False
@@ -436,6 +407,7 @@ Rules:
 1. Return ONLY ingredient names (food items)
 2. Do NOT include cooking methods, cuisine types, or non-food words
 3. Include quantities if specified
+4. Keep compound ingredients together (e.g., "bhetki fish", "coriander powder")
 
 Output format (JSON array):
 [
@@ -449,6 +421,9 @@ Output: [{{"name": "pumpkin", "qty": "some"}}, {{"name": "bitter gourd", "qty": 
 
 Input: "I have 2kg chicken, some rice and tomatoes"
 Output: [{{"name": "chicken", "qty": "2kg"}}, {{"name": "rice", "qty": "some"}}, {{"name": "tomatoes", "qty": "some"}}]
+
+Input: "bhetki fish and coriander powder"
+Output: [{{"name": "bhetki fish", "qty": "some"}}, {{"name": "coriander powder", "qty": "some"}}]
 
 Now extract from: "{text}"
 """
@@ -467,7 +442,7 @@ Now extract from: "{text}"
             response = requests.post(self.llm_api_url, json=payload, timeout=800)
             
             if response.status_code != 200:
-                print(f"  LLM extraction failed: {response.status_code}")
+                print(f" LLM extraction failed: {response.status_code}")
                 return []
             
             result = response.json()
@@ -660,7 +635,7 @@ Term: "{name}"
             response = requests.post(self.llm_api_url, json=payload, timeout=800)
             
             if response.status_code != 200:
-                print(f"  LLM validation failed for '{name}': {response.status_code}")
+                print(f" LLM validation failed for '{name}': {response.status_code}")
                 # Default to True for unknown terms (be permissive)
                 return True
             
@@ -677,12 +652,12 @@ Term: "{name}"
             data = json.loads(raw_content)
             is_ingredient = data.get('is_ingredient', True)
             
-            print(f"  🔍 LLM validated '{name}': {is_ingredient}")
+            print(f" LLM validated '{name}': {is_ingredient}")
             
             return is_ingredient
             
         except Exception as e:
-            print(f"  LLM validation error for '{name}': {str(e)}")
+            print(f" LLM validation error for '{name}': {str(e)}")
             # Default to True (be permissive on errors)
             return True
     
@@ -759,7 +734,7 @@ Term: "{name}"
         
         # If sequence-based input detected
         if not has_ingredient_names and len(standalone_qtys) > 0:
-            print(f"  Sequence-based input detected: {len(standalone_qtys)} quantities for {len(unclear_ings)} unclear ingredients")
+            print(f" Sequence-based input detected: {len(standalone_qtys)} quantities for {len(unclear_ings)} unclear ingredients")
             updated = []
             for ing in ingredients:
                 if ing.get('unclear'):
@@ -768,7 +743,7 @@ Term: "{name}"
                     if unclear_idx < len(standalone_qtys):
                         ing['qty'] = standalone_qtys[unclear_idx]
                         ing['unclear'] = False
-                        print(f"  ✓ Updated '{ing['name']}': {standalone_qtys[unclear_idx]} (sequence position {unclear_idx+1})")
+                        print(f" Updated '{ing['name']}': {standalone_qtys[unclear_idx]} (sequence position {unclear_idx+1})")
                 updated.append(ing)
             return updated
         
@@ -832,18 +807,51 @@ Term: "{name}"
                         
                         updated.append({"name": ing['name'], "qty": qty, "unclear": False})
                         found = True
-                        print(f"  Updated '{ing['name']}': {qty} (pattern matched)")
+                        print(f" Updated '{ing['name']}': {qty} (pattern matched)")
                         break
                 
                 if not found:
                     # Keep as unclear if no quantity found
                     updated.append(ing)
-                    print(f"  No quantity found for '{ing['name']}' - keeping as unclear")
+                    print(f" No quantity found for '{ing['name']}' - keeping as unclear")
             else:
                 # Already clear, keep as is
                 updated.append(ing)
         
         return updated
+    
+    # ==================== NEW: SMART OIL/SAUCE TYPE SPECIFICATION ====================
+    
+    def check_for_generic_items(self, ingredients: List[Dict]) -> Dict:
+        """
+        OPTIONAL FEATURE: Check if user has generic items that need specification
+        Returns: {"has_generic": bool, "items": List[Dict]}
+        """
+        generic_items = []
+        
+        for ing in ingredients:
+            ing_name_lower = ing['name'].lower()
+            
+            # Check for generic "oil"
+            if ing_name_lower == 'oil':
+                generic_items.append({
+                    'name': ing['name'],
+                    'type': 'oil',
+                    'suggestions': ['mustard oil', 'olive oil', 'soybean oil', 'sunflower oil', 'sesame oil', 'coconut oil']
+                })
+            
+            # Check for generic "sauce"
+            elif ing_name_lower == 'sauce':
+                generic_items.append({
+                    'name': ing['name'],
+                    'type': 'sauce',
+                    'suggestions': ['tomato sauce', 'soy sauce', 'chili sauce', 'fish sauce']
+                })
+        
+        return {
+            'has_generic': len(generic_items) > 0,
+            'items': generic_items
+        }
     
     # ==================== LLM SUGGESTIONS ====================
     
@@ -870,8 +878,13 @@ Rules:
 - Lowercase items
 - 3-5 essential spices only
 - 2-3 essential basics only
-- Be specific (e.g., "mustard oil" not "oil")
+- For oil, use ONLY "oil" (NOT "mustard oil", "olive oil", etc.)
+- For other items, be specific (e.g., "soy sauce" not just "sauce")
 - Exclude items in: {ing_text}
+
+Examples:
+- If oil is needed: suggest "oil" (NOT "mustard oil" or "olive oil")
+- If sauce is needed: suggest specific type like "soy sauce", "fish sauce"
 """
 
             payload = {
@@ -934,7 +947,9 @@ Analyze and respond in this EXACT JSON format:
 
 CRITICAL RULES:
 - feasible: true only if the ingredients can make an authentic {cuisine} recipe
-- missing_essentials: list simple ingredient/spice names separated by commas (e.g., ["turmeric", "onion", "garlic", "ginger", "coriander powder"]) - NO explanations or categories
+- missing_essentials: list simple ingredient/spice names (e.g., ["turmeric", "onion", "garlic", "ginger", "coriander powder"]) - NO explanations or categories
+- For oil, use ONLY "oil" (NOT "mustard oil", "olive oil", etc.)
+- For other items, use specific names (e.g., "soy sauce", "fish sauce")
 - alternative_cuisines: list 2-3 COMPLETELY DIFFERENT cuisine types (e.g., ["Chinese", "Thai", "Mediterranean"]) - NOT recipe/dish names like "Fish Curry" or "Tacos"
 - alternative_cuisines MUST be COMPLETELY DIFFERENT from "{cuisine}" - if {cuisine} is "Indian-Sub", do NOT suggest "Bengali", "Punjabi", "South Indian" etc. as these are part of Indian-Sub
 - Be practical and realistic
@@ -945,8 +960,8 @@ Cuisine hierarchy to remember:
 - If user chose "Indian-Sub", suggest varied cuisines like: Chinese, Thai, Mediterranean, Middle Eastern, Continental, Japanese, Korean, Mexican, Italian
 - If user chose "Oriental", suggest cuisines like: Mediterranean, Indian-Sub, Middle Eastern, Continental, Mexican, Italian
 
-Examples of CORRECT missing_essentials: ["turmeric", "onion", "garlic", "ginger", "coconut milk"]
-Examples of WRONG missing_essentials: ["Spices (such as turmeric, coriander)", "Coconut milk or yogurt", "Onions, garlic, ginger"]
+Examples of CORRECT missing_essentials: ["turmeric", "onion", "garlic", "ginger", "oil"]
+Examples of WRONG missing_essentials: ["Spices (such as turmeric, coriander)", "Coconut milk or yogurt", "Onions, garlic, ginger", "mustard oil", "olive oil"]
 
 Examples of CORRECT alternative_cuisines (when {cuisine} is "Indian-Sub"): ["Mediterranean", "Middle Eastern", "Italian"] OR ["Japanese", "Korean", "Mexican"] OR ["Continental", "Thai", "Turkish"]
 Examples of WRONG alternative_cuisines (when {cuisine} is "Indian-Sub"): ["Bengali", "Fish Curry", "Punjabi"]
@@ -1248,83 +1263,15 @@ Respond with only valid JSON, no other text."""
                 missing.append('spices')
                 return missing
         
+        # NEW: Handle _pending_generic_items (for oil/sauce specification)
+        if collected.get('_pending_generic_items'):
+            missing.append('generic_items_pending')
+            return missing
+        
         # NEW: Handle _pending_spice_suggestions (from "no spices" flow)
         if collected.get('_pending_spice_suggestions'):
-            message_lower = message.lower().strip()
-            
-            if intent == 'add_all_suggestions' or 'yes' in message_lower or 'add' in message_lower:
-                # User wants to add suggested spices
-                spices = collected['_pending_spice_suggestions']['spices']
-                spice_items = [{'name': spice, 'qty': None} for spice in spices]
-                
-                collected['ingredients'] = self.add_suggestions(
-                    collected['ingredients'],
-                    spice_items,
-                    collected.get('cuisine_preference')
-                )
-                collected['_spices_provided'] = True
-                del collected['_pending_spice_suggestions']
-                
-                missing = self.check_missing(collected)
-                msg = f" Added: {', '.join(spices)}!\n\n"
-                if not missing:
-                    msg += self.format_summary(collected)
-                else:
-                    msg += self.next_question(missing, collected)
-                
-                return {
-                    "status": "success",
-                    "bot_name": "Doctor Foody",
-                    "message": msg,
-                    "collected_data": collected,
-                    "missing_fields": missing
-                }, 200
-            
-            elif intent == 'skip_suggestions' or 'skip' in message_lower or 'no' in message_lower:
-                # User still wants to skip - continue without spices
-                collected['_spices_provided'] = True
-                del collected['_pending_spice_suggestions']
-                
-                missing = self.check_missing(collected)
-                return {
-                    "status": "success",
-                    "bot_name": "Doctor Foody",
-                    "message": " Continuing without spices!\n\n" + self.next_question(missing, collected),
-                    "collected_data": collected,
-                    "missing_fields": missing
-                }, 200
-            
-            else:
-                # User specified specific spices
-                selected_spices = []
-                for spice in collected['_pending_spice_suggestions']['spices']:
-                    if spice.lower() in message_lower:
-                        selected_spices.append({'name': spice, 'qty': None})
-                
-                if selected_spices:
-                    collected['ingredients'] = self.add_suggestions(
-                        collected['ingredients'],
-                        selected_spices,
-                        collected.get('cuisine_preference')
-                    )
-                    collected['_spices_provided'] = True
-                    del collected['_pending_spice_suggestions']
-                    
-                    missing = self.check_missing(collected)
-                    spice_names = [s['name'] for s in selected_spices]
-                    msg = f" Added: {', '.join(spice_names)}!\n\n"
-                    if not missing:
-                        msg += self.format_summary(collected)
-                    else:
-                        msg += self.next_question(missing, collected)
-                    
-                    return {
-                        "status": "success",
-                        "bot_name": "Doctor Foody",
-                        "message": msg,
-                        "collected_data": collected,
-                        "missing_fields": missing
-                    }, 200
+            missing.append('spices')
+            return missing
         
         if collected.get('_pending_suggestions') and not collected.get('_suggestions_handled'):
             missing.append('suggestions_pending')
@@ -1349,7 +1296,28 @@ Respond with only valid JSON, no other text."""
         field = missing[0]
         
         if field == 'ingredients':
-            return " Hi, I'm doctor foodie ! What ingredients do you have?\n Example: '2 pieces katla fish, 1cup rice, 100g onion'"
+            return " Hi, I'm Doctor Foody! What ingredients do you have?\n Example: '2 pieces katla fish, 1cup rice, 100g onion'"
+        
+        elif field == 'generic_items_pending':
+            # NEW: Ask for oil/sauce type specification
+            generic_info = collected['_pending_generic_items']
+            items = generic_info['items']
+            
+            if len(items) == 1:
+                item = items[0]
+                sugg_list = ', '.join(item['suggestions'][:4])
+                return (
+                    f" Which type of {item['name']}?\n"
+                    f" Suggestions: {sugg_list}\n"
+                    f"Type the specific type or 'skip' to continue with generic {item['name']}"
+                )
+            else:
+                msg = " 🔍 Please specify types for:\n"
+                for item in items:
+                    sugg_list = ', '.join(item['suggestions'][:3])
+                    msg += f"• {item['name']}: {sugg_list}\n"
+                msg += "\nType specific types or 'skip' to continue"
+                return msg
         
         elif field == 'spices':
             return " What spices do you have or do you want to add any spices?\n Example: 'turmeric, cumin, salt, red chili powder' or type 'no' to skip"
@@ -1357,9 +1325,9 @@ Respond with only valid JSON, no other text."""
         elif field == 'unclear_quantities':
             unclear = [ing['name'] for ing in collected['ingredients'] if ing.get('unclear')]
             if len(unclear) == 1:
-                return f"How much {unclear[0]}?\n Example: '2 pieces' or '100g' or '1cup'"
+                return f" How much {unclear[0]}?\n Example: '2 pieces' or '100g' or '1cup'"
             else:
-                return f"Please specify quantities for: {', '.join(unclear)}\n Example: '2tomato, 100g onion, 1cup rice'"
+                return f" Please specify quantities for: {', '.join(unclear)}\n Example: '2tomato, 100g onion, 1cup rice'"
         
         elif field == 'suggestions_pending':
             sugg = collected['_pending_suggestions']
@@ -1368,9 +1336,9 @@ Respond with only valid JSON, no other text."""
             items_list = '\n'.join([f"{i+1}. {item}" for i, item in enumerate(all_sugg)])
             
             return (
-                f" **Common additions for {collected.get('cuisine_preference', 'your cuisine')}:**\n\n"
+                f"  **Common additions for {collected.get('cuisine_preference', 'your cuisine')}:**\n\n"
                 f"{items_list}\n\n"
-                f" Select items to add:\n"
+                f"  Select items to add:\n"
                 f"• Type names: 'turmeric, cumin, salt'\n"
                 f"• Type names with qty: 'sesame oil 2tsp, turmeric 1tsp'\n"
                 f"• Type numbers: '1, 3, 5'\n"
@@ -1394,11 +1362,11 @@ Respond with only valid JSON, no other text."""
         ings = ", ".join([f"{ing['qty']} {ing['name']}" for ing in collected['ingredients']])
         
         return (
-            f" **Your cooking plan:**\n\n"
-            f" **Ingredients:** {ings}\n"
-            f" **Cuisine:** {collected['cuisine_preference']}\n"
-            f" **People:** {collected['number_of_people']}\n"
-            f" **Type:** {collected['cooking_preference'].replace('_', ' ').title()}\n\n"
+            f"**Your cooking plan:**\n\n"
+            f"**Ingredients:** {ings}\n"
+            f"**Cuisine:** {collected['cuisine_preference']}\n"
+            f"**People:** {collected['number_of_people']}\n"
+            f"**Type:** {collected['cooking_preference'].replace('_', ' ').title()}\n\n"
         )
     
     # ==================== INTENT DETECTION ====================
@@ -1450,7 +1418,7 @@ Respond with only valid JSON, no other text."""
                 return {
                     "status": "success",
                     "bot_name": "Doctor Foody",
-                    "message": " Here are your delicious recipes!",
+                    "message": "Here are your delicious recipes!",
                     "data": recipe_list,
                     "collected_data": {},
                     "missing_fields": []
@@ -1494,7 +1462,7 @@ Respond with only valid JSON, no other text."""
             return {
                 "status": "success",
                 "bot_name": "Doctor Foody",
-                "message": " Starting fresh!\n\n" + self.next_question(['ingredients'], {}),
+                "message": "Starting fresh!\n\n" + self.next_question(['ingredients'], {}),
                 "collected_data": {},
                 "missing_fields": ['ingredients', 'cuisine_preference', 'number_of_people', 'cooking_preference']
             }, 200
@@ -1505,12 +1473,63 @@ Respond with only valid JSON, no other text."""
                 return {
                     "status": "success",
                     "bot_name": "Doctor Foody",
-                    "message": " Please complete all details!\n\n" + self.next_question(missing, collected),
+                    "message": "Please complete all details!\n\n" + self.next_question(missing, collected),
                     "collected_data": collected,
                     "missing_fields": missing
                 }, 200
             
             return self.generate_recipe(user_id, collected)
+        
+        # NEW: Handle generic items specification (oil/sauce types)
+        if collected.get('_pending_generic_items'):
+            message_lower = message.lower().strip()
+            
+            if intent == 'skip_suggestions' or 'skip' in message_lower:
+                # User wants to skip specification
+                del collected['_pending_generic_items']
+                missing = self.check_missing(collected)
+                
+                return {
+                    "status": "success",
+                    "bot_name": "Doctor Foody",
+                    "message": "Continuing with generic items!\n\n" + (self.next_question(missing, collected) if missing else self.format_summary(collected)),
+                    "collected_data": collected,
+                    "missing_fields": missing
+                }, 200
+            else:
+                # User specified specific types - extract and update
+                generic_info = collected['_pending_generic_items']
+                updated_ingredients = []
+                
+                for ing in collected['ingredients']:
+                    # Check if this ingredient needs specification
+                    needs_spec = False
+                    for item in generic_info['items']:
+                        if ing['name'].lower() == item['name'].lower():
+                            needs_spec = True
+                            # Check if user specified a type
+                            for suggestion in item['suggestions']:
+                                if suggestion.lower() in message_lower:
+                                    # Update ingredient name to specific type
+                                    ing['name'] = suggestion.title()
+                                    print(f"Updated '{item['name']}' to '{suggestion}'")
+                                    break
+                            break
+                    
+                    updated_ingredients.append(ing)
+                
+                collected['ingredients'] = updated_ingredients
+                del collected['_pending_generic_items']
+                
+                missing = self.check_missing(collected)
+                
+                return {
+                    "status": "success",
+                    "bot_name": "Doctor Foody",
+                    "message": "Updated!\n\n" + (self.next_question(missing, collected) if missing else self.format_summary(collected)),
+                    "collected_data": collected,
+                    "missing_fields": missing
+                }, 200
         
         # Handle suggestions
         if collected.get('_pending_suggestions') and not collected.get('_suggestions_handled'):
@@ -1528,13 +1547,15 @@ Respond with only valid JSON, no other text."""
                 collected['_suggestions_handled'] = True
                 del collected['_pending_suggestions']
                 
-                # If this was from cuisine_not_feasible flow, clean it up
+                # FIXED: If this was from cuisine_not_feasible flow, clean it up AND mark cuisine as set
                 if collected.get('_cuisine_not_feasible'):
+                    # User accepted the original cuisine by adding missing items
+                    collected['cuisine_preference'] = collected['_cuisine_not_feasible']['original_cuisine']
                     del collected['_cuisine_not_feasible']
                 
                 missing = self.check_missing(collected)
                 
-                msg = f" Added: {', '.join(all_items)}!\n\n"
+                msg = f"Added: {', '.join(all_items)}!\n\n"
                 if not missing:
                     msg += self.format_summary(collected)
                 else:
@@ -1552,16 +1573,18 @@ Respond with only valid JSON, no other text."""
                 collected['_suggestions_handled'] = True
                 del collected['_pending_suggestions']
                 
-                # If this was from cuisine_not_feasible flow, clean it up
+                # FIXED: If this was from cuisine_not_feasible flow, DO NOT set cuisine
+                # User rejected adding items, so they need to choose alternative cuisine
                 if collected.get('_cuisine_not_feasible'):
-                    del collected['_cuisine_not_feasible']
+                    # Keep _cuisine_not_feasible to force user to choose alternative
+                    pass
                 
                 missing = self.check_missing(collected)
                 
                 return {
                     "status": "success",
                     "bot_name": "Doctor Foody",
-                    "message": " Skipped!\n\n" + self.next_question(missing, collected),
+                    "message": "Skipped!\n\n" + self.next_question(missing, collected),
                     "collected_data": collected,
                     "missing_fields": missing
                 }, 200
@@ -1577,14 +1600,16 @@ Respond with only valid JSON, no other text."""
                 collected['_suggestions_handled'] = True
                 del collected['_pending_suggestions']
                 
-                # If this was from cuisine_not_feasible flow, clean it up
+                # FIXED: If this was from cuisine_not_feasible flow, clean it up AND mark cuisine as set
                 if collected.get('_cuisine_not_feasible'):
+                    # User accepted the original cuisine by adding some/all missing items
+                    collected['cuisine_preference'] = collected['_cuisine_not_feasible']['original_cuisine']
                     del collected['_cuisine_not_feasible']
                 
                 missing = self.check_missing(collected)
                 
                 selected_names = [item['name'] for item in selected_items]
-                msg = f" Added: {', '.join(selected_names)}!\n\n"
+                msg = f"Added: {', '.join(selected_names)}!\n\n"
                 if not missing:
                     msg += self.format_summary(collected)
                 else:
@@ -1605,6 +1630,22 @@ Respond with only valid JSON, no other text."""
                     "collected_data": collected,
                     "missing_fields": ['suggestions_pending']
                 }, 200
+        
+        # FIXED: Check spices question FIRST before extracting ingredients
+        # This ensures spices question is ALWAYS mandatory
+        chat_history = data.get('chat_history', [])
+        last_bot_msg = None
+        is_spices_question = False
+        
+        if chat_history and len(chat_history) > 0:
+            for msg in reversed(chat_history):
+                if msg.get('role') == 'assistant':
+                    last_bot_msg = msg.get('content', '')
+                    break
+            
+            # Check if last question was about spices
+            if last_bot_msg and 'what spices' in last_bot_msg.lower():
+                is_spices_question = True
         
         # Extract data
         if collected.get('ingredients'):
@@ -1628,28 +1669,32 @@ Respond with only valid JSON, no other text."""
             else:
                 collected['ingredients'] = new_ings
             
-            # DO NOT set _spices_provided automatically
-            # Only set when user explicitly responds to spices question
-        
-        # Handle spices question response
-        # Check if previous bot message was asking for spices
-        chat_history = data.get('chat_history', [])
-        if chat_history and len(chat_history) > 0:
-            last_bot_msg = None
-            for msg in reversed(chat_history):
-                if msg.get('role') == 'assistant':
-                    last_bot_msg = msg.get('content', '')
-                    break
-            
-            # If last question was about spices and user responded
-            if last_bot_msg and 'what spices' in last_bot_msg.lower():
-                # User is responding to spices question - mark as provided
+            # FIXED: Only mark _spices_provided if user is responding to spices question
+            if is_spices_question and new_ings:
                 collected['_spices_provided'] = True
+                print(f"User responded to spices question with ingredients")
         
-        # Handle "no spices" response
+        # Handle "no spices" or "yes" response
         missing = self.check_missing(collected)
         
-        if 'spices' in missing and intent == 'skip_suggestions':
+        # FIXED: Handle "yes" response - ask user which spices they want to add
+        if is_spices_question and 'spices' in missing and (intent == 'add_all_suggestions' or message.lower().strip() == 'yes'):
+            # User said "yes" - ask them which spices to add
+            msg = (
+                "Great! Please tell me which spices you want to add.\n"
+                "Example: 'turmeric, cumin, salt, red chili powder'\n"
+                "Or type specific quantities: 'turmeric 1tsp, salt 2tbsp, oil 1tbsp'"
+            )
+            
+            return {
+                "status": "success",
+                "bot_name": "Doctor Foody",
+                "message": msg,
+                "collected_data": collected,
+                "missing_fields": ['spices']
+            }, 200
+        
+        if is_spices_question and 'spices' in missing and intent == 'skip_suggestions':
             # User said "no spices" - check if recipe is possible
             feasibility = self.check_recipe_feasibility_without_spices(collected['ingredients'])
             
@@ -1659,7 +1704,7 @@ Respond with only valid JSON, no other text."""
                 reason = feasibility.get('reason', 'Basic seasonings are needed for a tasty dish')
                 
                 msg = (
-                    f" {reason}\n\n"
+                    f"{reason}\n\n"
                     f"**Minimum suggested spices:**\n"
                     f"• {', '.join(sugg_spices)}\n\n"
                     f"Would you like to add these? (type 'yes' to add all, or specific ones like 'salt, oil')\n"
@@ -1681,18 +1726,113 @@ Respond with only valid JSON, no other text."""
             else:
                 # Recipe is possible without spices - mark as provided and continue
                 collected['_spices_provided'] = True
+        
+        # Handle _pending_spice_suggestions response
+        if collected.get('_pending_spice_suggestions'):
+            message_lower = message.lower().strip()
             
-            # CRITICAL FIX: If user is in cuisine_not_feasible state and provides ingredients
-            # Check if they're providing the missing items
-            if collected.get('_cuisine_not_feasible'):
-                missing_items_lower = [item.lower() for item in collected['_cuisine_not_feasible'].get('missing_items', [])]
-                new_ings_lower = [ing['name'].lower() for ing in new_ings]
+            if intent == 'add_all_suggestions' or 'yes' in message_lower or 'add' in message_lower:
+                # User wants to add suggested spices
+                spices = collected['_pending_spice_suggestions']['spices']
+                spice_items = [{'name': spice, 'qty': None} for spice in spices]
                 
-                # Check if any of the new ingredients match missing items
-                if any(ing_name in missing_items_lower for ing_name in new_ings_lower):
-                    # User is adding the missing items - accept the original cuisine
-                    collected['cuisine_preference'] = collected['_cuisine_not_feasible']['original_cuisine']
-                    del collected['_cuisine_not_feasible']
+                collected['ingredients'] = self.add_suggestions(
+                    collected['ingredients'],
+                    spice_items,
+                    collected.get('cuisine_preference')
+                )
+                collected['_spices_provided'] = True
+                del collected['_pending_spice_suggestions']
+                
+                # NEW: Check for generic items after adding spices
+                generic_check = self.check_for_generic_items(collected['ingredients'])
+                if generic_check['has_generic']:
+                    collected['_pending_generic_items'] = generic_check
+                    missing = self.check_missing(collected)
+                    msg = f"Added: {', '.join(spices)}!\n\n"
+                    msg += self.next_question(missing, collected)
+                    
+                    return {
+                        "status": "success",
+                        "bot_name": "Doctor Foody",
+                        "message": msg,
+                        "collected_data": collected,
+                        "missing_fields": missing
+                    }, 200
+                
+                missing = self.check_missing(collected)
+                msg = f"Added: {', '.join(spices)}!\n\n"
+                if not missing:
+                    msg += self.format_summary(collected)
+                else:
+                    msg += self.next_question(missing, collected)
+                
+                return {
+                    "status": "success",
+                    "bot_name": "Doctor Foody",
+                    "message": msg,
+                    "collected_data": collected,
+                    "missing_fields": missing
+                }, 200
+            
+            elif intent == 'skip_suggestions' or 'skip' in message_lower or 'no' in message_lower:
+                # User still wants to skip - continue without spices
+                collected['_spices_provided'] = True
+                del collected['_pending_spice_suggestions']
+                
+                missing = self.check_missing(collected)
+                return {
+                    "status": "success",
+                    "bot_name": "Doctor Foody",
+                    "message": "Continuing without spices!\n\n" + self.next_question(missing, collected),
+                    "collected_data": collected,
+                    "missing_fields": missing
+                }, 200
+            
+            else:
+                # User specified specific spices
+                selected_spices = []
+                for spice in collected['_pending_spice_suggestions']['spices']:
+                    if spice.lower() in message_lower:
+                        selected_spices.append({'name': spice, 'qty': None})
+                
+                if selected_spices:
+                    collected['ingredients'] = self.add_suggestions(
+                        collected['ingredients'],
+                        selected_spices,
+                        collected.get('cuisine_preference')
+                    )
+                    collected['_spices_provided'] = True
+                    del collected['_pending_spice_suggestions']
+                    
+                    missing = self.check_missing(collected)
+                    spice_names = [s['name'] for s in selected_spices]
+                    msg = f"Added: {', '.join(spice_names)}!\n\n"
+                    if not missing:
+                        msg += self.format_summary(collected)
+                    else:
+                        msg += self.next_question(missing, collected)
+                    
+                    return {
+                        "status": "success",
+                        "bot_name": "Doctor Foody",
+                        "message": msg,
+                        "collected_data": collected,
+                        "missing_fields": missing
+                    }, 200
+        
+        # FIXED: If user is in cuisine_not_feasible state and provides ingredients
+        # Check if they're providing the missing items
+        if collected.get('_cuisine_not_feasible') and new_ings:
+            missing_items_lower = [item.lower() for item in collected['_cuisine_not_feasible'].get('missing_items', [])]
+            new_ings_lower = [ing['name'].lower() for ing in new_ings]
+            
+            # Check if any of the new ingredients match missing items
+            if any(ing_name in missing_items_lower for ing_name in new_ings_lower):
+                # User is adding the missing items - accept the original cuisine
+                collected['cuisine_preference'] = collected['_cuisine_not_feasible']['original_cuisine']
+                del collected['_cuisine_not_feasible']
+                print(f"User added missing items, accepting original cuisine: {collected['cuisine_preference']}")
         
         if not collected.get('cuisine_preference'):
             cuisine = self.extract_cuisine(message)
@@ -1702,6 +1842,7 @@ Respond with only valid JSON, no other text."""
                     # User is choosing an alternative cuisine
                     collected['cuisine_preference'] = cuisine
                     del collected['_cuisine_not_feasible']
+                    print(f"User chose alternative cuisine: {cuisine}")
                     # Don't suggest any spices - just move to next question
                 else:
                     # First time choosing cuisine - check feasibility
@@ -1714,7 +1855,7 @@ Respond with only valid JSON, no other text."""
                             missing_items = ', '.join(feasibility['missing_essentials'][:3])
                             
                             msg = (
-                                f" {feasibility.get('reason', 'The selected cuisine may need additional ingredients.')}\n\n"
+                                f"{feasibility.get('reason', 'The selected cuisine may need additional ingredients.')}\n\n"
                                 f"**Option 1:** Add these items to make {cuisine}:\n"
                                 f"• {missing_items}\n\n"
                                 f"**Option 2:** Try {alt_cuisines} with your current ingredients\n\n"
@@ -1737,6 +1878,7 @@ Respond with only valid JSON, no other text."""
                     
                     # Cuisine is feasible or no ingredients yet - accept it
                     collected['cuisine_preference'] = cuisine
+                    print(f"  ✓ Cuisine accepted: {cuisine}")
                     # REMOVED: No spice suggestions after cuisine selection
         
         # Handle cuisine feasibility response
@@ -1748,13 +1890,17 @@ Respond with only valid JSON, no other text."""
                 missing_items = collected['_cuisine_not_feasible']['missing_items']
                 original_cuisine = collected['_cuisine_not_feasible']['original_cuisine']
                 
-                # Add missing items as suggestions
+                # FIXED: Set cuisine NOW (before showing suggestions)
                 collected['cuisine_preference'] = original_cuisine
+                
+                # Add missing items as suggestions
                 collected['_pending_suggestions'] = {
                     'spices': missing_items[:5],
                     'basics': []
                 }
                 del collected['_cuisine_not_feasible']
+                
+                print(f"  ✓ User chose to add items for {original_cuisine}")
                 
                 missing = self.check_missing(collected)
                 return {
@@ -1770,6 +1916,7 @@ Respond with only valid JSON, no other text."""
                 new_cuisine = self.extract_cuisine(message)
                 if new_cuisine:
                     collected['cuisine_preference'] = new_cuisine
+                    print(f"  ✓ User changed to alternative cuisine: {new_cuisine}")
                 del collected['_cuisine_not_feasible']
                 # Continue to next question
         
