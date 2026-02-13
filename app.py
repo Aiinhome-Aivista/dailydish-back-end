@@ -8,6 +8,10 @@ from controller.recipe_controller import generate_recipe_controller
 from controller.doctor_foody_controller import doctor_foody_chat_controller
 from controller.save_recipe_controller import delete_saved_recipe_controller, get_saved_recipes_controller, save_menu_controller
 from controller.get_recipe_details_controller import get_recipe_details_controller, update_recipe_servings_controller 
+from controller.community_controller import (
+    share_to_community_controller, 
+    get_community_feed_controller
+)
 
 app = Flask(__name__)
 CORS(app) 
@@ -110,6 +114,19 @@ def chat_endpoint():
             "status": "error",
             "message": f"Server Error: {str(e)}"
         }), 500
+    
+@app.route('/share-to-community', methods=['POST'])
+@token_required
+def share_meal(current_user_id):
+    data = request.form.to_dict()
+    image = request.files.get('image') 
+    response, status_code = share_to_community_controller(current_user_id, data, image)
+    return jsonify(response), status_code
+
+@app.route('/get-community-feed', methods=['GET'])
+def get_community_feed():
+    response, status_code = get_community_feed_controller()
+    return jsonify(response), status_code
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0", port=5000)

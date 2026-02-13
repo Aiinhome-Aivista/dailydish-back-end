@@ -1,7 +1,271 @@
 import requests
 import os
 import json
+import re
 from database.db import get_db_connection
+
+
+def convert_to_grams(qty_str):
+    """
+    Convert various quantity formats to grams
+    Returns: (grams, original_unit)
+    """
+    qty_str = str(qty_str).strip().lower()
+    
+    # Extract number and unit
+    match = re.search(r'(\d+\.?\d*)\s*([a-zA-Z]+)?', qty_str)
+    if not match:
+        return 0, ''
+    
+    value = float(match.group(1))
+    unit = match.group(2) if match.group(2) else ''
+    
+    # Conversion table
+    conversions = {
+        'g': 1,
+        'kg': 1000,
+        'ml': 1,  # Assuming 1ml = 1g for liquids
+        'l': 1000,
+        'tsp': 5,
+        'tbsp': 15,
+        'cup': 240,
+        'piece': 150,  # Average piece weight
+        'pieces': 150,
+    }
+    
+    grams = value * conversions.get(unit, 1)
+    return grams, unit
+
+
+def get_nutrition_data_from_llm(ingredients_used):
+    """
+    Get per-100g nutrition data for each ingredient from LLM
+    LLM ONLY provides the database values, NOT calculation
+    Returns: dict mapping ingredient_name -> {calories, protein, fat, carbs, fiber} per 100g
+    """
+    ingredient_names = [ing.get('name', '') for ing in ingredients_used]
+    
+    prompt = f"""
+You are a Nutrition Database Expert. Provide ONLY the nutritional values per 100g for each ingredient.
+
+INGREDIENTS:
+{json.dumps(ingredient_names, indent=2)}
+
+YOUR TASK:
+For EACH ingredient, provide scientifically accurate USDA/IFCT nutritional values PER 100g.
+
+REFERENCE DATABASE (use these as guidelines):
+
+PROTEINS (per 100g):
+- Katla/Rohu/Fish: 120 kcal, 17.5g protein, 5.2g fat, 0g carbs, 0g fiber
+- Chicken: 165 kcal, 31g protein, 3.6g fat, 0g carbs, 0g fiber
+- Paneer: 265 kcal, 18.3g protein, 20.8g fat, 1.2g carbs, 0g fiber
+- Egg: 155 kcal, 13g protein, 11g fat, 1.1g carbs, 0g fiber
+- Mutton: 294 kcal, 25g protein, 21g fat, 0g carbs, 0g fiber
+- Prawn/Shrimp: 99 kcal, 24g protein, 0.3g fat, 0.2g carbs, 0g fiber
+
+VEGETABLES (per 100g):
+- Potato: 77 kcal, 2g protein, 0.1g fat, 17g carbs, 2.2g fiber
+- Tomato: 18 kcal, 0.9g protein, 0.2g fat, 3.9g carbs, 1.2g fiber
+- Onion: 40 kcal, 1.1g protein, 0.1g fat, 9.3g carbs, 1.7g fiber
+- Cauliflower: 25 kcal, 1.9g protein, 0.3g fat, 5g carbs, 2g fiber
+- Broccoli: 34 kcal, 2.8g protein, 0.4g fat, 7g carbs, 2.6g fiber
+- Capsicum/Bell Pepper: 20 kcal, 0.9g protein, 0.2g fat, 4.6g carbs, 1.7g fiber
+- Mushroom: 22 kcal, 3.1g protein, 0.3g fat, 3.3g carbs, 1g fiber
+- Carrot: 41 kcal, 0.9g protein, 0.2g fat, 10g carbs, 2.8g fiber
+- Spinach: 23 kcal, 2.9g protein, 0.4g fat, 3.6g carbs, 2.2g fiber
+- Cabbage: 25 kcal, 1.3g protein, 0.1g fat, 6g carbs, 2.5g fiber
+
+GRAINS (per 100g):
+- Rice (cooked): 130 kcal, 2.7g protein, 0.3g fat, 28g carbs, 0.4g fiber
+- Pasta (cooked): 131 kcal, 5g protein, 1.1g fat, 25g carbs, 1.8g fiber
+- Wheat Flour: 364 kcal, 10.7g protein, 1.7g fat, 76g carbs, 2.7g fiber
+- Bread: 265 kcal, 9g protein, 3.2g fat, 49g carbs, 2.7g fiber
+
+OILS & FATS (per 100g):
+- Oil (any): 884 kcal, 0g protein, 100g fat, 0g carbs, 0g fiber
+- Butter: 717 kcal, 0.9g protein, 81g fat, 0.1g carbs, 0g fiber
+- Ghee: 900 kcal, 0g protein, 100g fat, 0g carbs, 0g fiber
+
+DAIRY (per 100g):
+- Milk: 61 kcal, 3.2g protein, 3.3g fat, 4.8g carbs, 0g fiber
+- Yogurt: 59 kcal, 3.5g protein, 0.4g fat, 4.7g carbs, 0g fiber
+- Cheese: 402 kcal, 25g protein, 33g fat, 1.3g carbs, 0g fiber
+
+SPICES (per 100g - typically used in very small amounts):
+- Salt: 0 kcal, 0g protein, 0g fat, 0g carbs, 0g fiber
+- Turmeric: 312 kcal, 10g protein, 3.2g fat, 67g carbs, 22.7g fiber
+- Cumin: 375 kcal, 18g protein, 22g fat, 44g carbs, 11g fiber
+- Chili Powder: 282 kcal, 13g protein, 15g fat, 50g carbs, 28g fiber
+- Coriander: 23 kcal, 2.1g protein, 0.5g fat, 3.7g carbs, 2.8g fiber
+- Ginger: 80 kcal, 1.8g protein, 0.8g fat, 18g carbs, 2g fiber
+- Garlic: 149 kcal, 6.4g protein, 0.5g fat, 33g carbs, 2.1g fiber
+
+LEGUMES (per 100g):
+- Chickpeas: 164 kcal, 9g protein, 2.6g fat, 27g carbs, 7.6g fiber
+- Lentils: 116 kcal, 9g protein, 0.4g fat, 20g carbs, 7.9g fiber
+- Kidney Beans: 127 kcal, 8.7g protein, 0.5g fat, 23g carbs, 6.4g fiber
+
+NUTS (per 100g):
+- Almonds: 579 kcal, 21g protein, 50g fat, 22g carbs, 12g fiber
+- Cashews: 553 kcal, 18g protein, 44g fat, 30g carbs, 3.3g fiber
+- Peanuts: 567 kcal, 26g protein, 49g fat, 16g carbs, 8.5g fiber
+
+FRUITS (per 100g):
+- Apple: 52 kcal, 0.3g protein, 0.2g fat, 14g carbs, 2.4g fiber
+- Banana: 89 kcal, 1.1g protein, 0.3g fat, 23g carbs, 2.6g fiber
+- Orange: 47 kcal, 0.9g protein, 0.1g fat, 12g carbs, 2.4g fiber
+
+CRITICAL INSTRUCTIONS:
+1. Return ONLY the per-100g values for each ingredient
+2. DO NOT calculate total nutrition
+3. Use closest match from database
+4. Return in strict JSON format
+
+RESPONSE FORMAT (strict JSON):
+{{
+  "Katla Fish": {{"calories": 120, "protein": 17.5, "fat": 5.2, "carbs": 0, "fiber": 0}},
+  "Salt": {{"calories": 0, "protein": 0, "fat": 0, "carbs": 0, "fiber": 0}},
+  "Oil": {{"calories": 884, "protein": 0, "fat": 100, "carbs": 0, "fiber": 0}}
+}}
+
+Return ONLY the JSON object mapping each ingredient to its per-100g nutrition data.
+"""
+
+    api_url = os.getenv("MISTRAL_API_URL")
+    model = os.getenv("MISTRAL_MODEL")
+
+    if not api_url or not model:
+        raise Exception("MISTRAL_API_URL or MISTRAL_MODEL environment variables not set")
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.1}
+    }
+
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            print(f"Fetching nutrition database from LLM, attempt {attempt + 1}/{max_retries}...")
+            response = requests.post(api_url, json=payload, timeout=700)
+            response.raise_for_status()
+            result = response.json()
+            
+            raw_content = result.get('response', '').strip()
+            
+            if not raw_content:
+                raise Exception("Empty response from LLM")
+            
+            # Clean up response
+            if raw_content.startswith('```json'):
+                raw_content = raw_content.replace('```json', '').replace('```', '').strip()
+            elif raw_content.startswith('```'):
+                raw_content = raw_content.replace('```', '').strip()
+            
+            nutrition_db = json.loads(raw_content)
+            
+            # Validate that we got data for all ingredients
+            for ing_name in ingredient_names:
+                if ing_name not in nutrition_db:
+                    raise Exception(f"Missing nutrition data for: {ing_name}")
+                
+                # Validate structure
+                required_keys = ['calories', 'protein', 'fat', 'carbs', 'fiber']
+                for key in required_keys:
+                    if key not in nutrition_db[ing_name]:
+                        raise Exception(f"Missing '{key}' for {ing_name}")
+            
+            print(f"Nutrition database fetched successfully")
+            return nutrition_db
+            
+        except json.JSONDecodeError as je:
+            last_error = f"JSON parsing error: {str(je)}"
+            print(f"Attempt {attempt + 1} failed: {last_error}")
+            if attempt < max_retries - 1:
+                continue
+        except Exception as e:
+            last_error = str(e)
+            print(f"Attempt {attempt + 1} failed: {last_error}")
+            if attempt < max_retries - 1:
+                continue
+    
+    raise Exception(f"Failed to fetch nutrition database after {max_retries} attempts. Last error: {last_error}")
+
+
+def calculate_nutrition_python(ingredients_used):
+    """
+    Calculate total nutrition using PYTHON with scientific logic
+    Step 1: Get per-100g data from LLM (database lookup only)
+    Step 2: Python does the mathematical calculation
+    Returns: dict with total nutrition values
+    """
+    # Step 1: Get nutrition database from LLM (NO calculation, just data)
+    print("Step 1: Fetching per-100g nutrition data from LLM...")
+    nutrition_db = get_nutrition_data_from_llm(ingredients_used)
+    
+    # Step 2: Python calculates total nutrition scientifically
+    print("Step 2: Python calculating total nutrition scientifically...")
+    total_nutrition = {
+        'calories': 0.0,
+        'protein': 0.0,
+        'fat': 0.0,
+        'carbs': 0.0,
+        'fiber': 0.0
+    }
+    
+    for ingredient in ingredients_used:
+        name = ingredient.get('name', '')
+        model_qty = ingredient.get('model_qty', '0')
+        
+        # Convert to grams
+        grams, _ = convert_to_grams(model_qty)
+        
+        # Get per-100g nutrition data
+        if name not in nutrition_db:
+            print(f"Warning: {name} not found in nutrition database, skipping")
+            continue
+        
+        per_100g = nutrition_db[name]
+        
+        # Python Scientific Calculation: (grams / 100) × per_100g_value
+        multiplier = grams / 100.0
+        
+        total_nutrition['calories'] += per_100g['calories'] * multiplier
+        total_nutrition['protein'] += per_100g['protein'] * multiplier
+        total_nutrition['fat'] += per_100g['fat'] * multiplier
+        total_nutrition['carbs'] += per_100g['carbs'] * multiplier
+        total_nutrition['fiber'] += per_100g['fiber'] * multiplier
+        
+        print(f"  {name} ({grams}g): {per_100g['calories'] * multiplier:.1f} kcal")
+    
+    # Format output
+    formatted_nutrition = {
+        'total_calories': f"{round(total_nutrition['calories'], 1)} kcal",
+        'protein': f"{round(total_nutrition['protein'], 1)} g",
+        'fat': f"{round(total_nutrition['fat'], 1)} g",
+        'carbohydrates': f"{round(total_nutrition['carbs'], 1)} g",
+        'fiber': f"{round(total_nutrition['fiber'], 1)} g"
+    }
+    
+    print(f"Total Nutrition (Python calculated): {formatted_nutrition}")
+    return formatted_nutrition
+
+
+def extract_unit_from_qty(qty_str):
+    """
+    Extract unit from quantity string
+    Returns: unit (e.g., 'pieces', 'g', 'kg', etc.)
+    """
+    qty_str = str(qty_str).strip().lower()
+    match = re.search(r'(\d+\.?\d*)\s*([a-zA-Z]+)?', qty_str)
+    if match and match.group(2):
+        return match.group(2)
+    return ''
 
 
 def get_llm_suitability_analysis(nutrition_data, dish_info, servings):
@@ -104,13 +368,6 @@ CALCULATION METHODOLOGY:
 4. Formula: Final = 100% + (sum of positive) + (sum of negative)
 5. Clamp between 20-95%
 6. SHOW YOUR MATH in the calculation field!
-
-Example Calculations:
-Child with high fat (79g per serving):
-- Base: 100%
-- Positive: Good protein (+8%)
-- Negative: Very high fat (-22%), High calories (-15%), No fiber (-8%)
-- Math: 100% + 8% - 22% - 15% - 8% = 63%
 
 RESPONSE FORMAT (strict JSON, NO extra text):
 {{
@@ -301,7 +558,8 @@ def get_recipe_details_controller(user_id, data):
     for ingredient in user_context['ingredients']:
         ingredients_list.append({
             "name": ingredient['name'],
-            "available_qty": ingredient['qty']
+            "available_qty": ingredient['qty'],
+            "unit": extract_unit_from_qty(ingredient['qty'])  # Extract unit
         })
     
     # Create readable string for prompt
@@ -316,7 +574,7 @@ You can ONLY use these {len(ingredients_list)} ingredients. NO additions, NO sub
 
 If you add ANY ingredient not in this list, the recipe will be REJECTED.
 
-Available Ingredients List:
+Available Ingredients List with Units:
 {json.dumps(ingredients_list, indent=2)}
 
 Recipe Details:
@@ -332,34 +590,42 @@ YOUR TASKS:
    - CRITICAL: prep_time + cook_time MUST EQUAL {cooking_time}
    - Example: If total is "45 min", then prep_time: "10 min" + cook_time: "35 min" = 45 min
 
-2. INGREDIENTS CALCULATION:
+2. INGREDIENTS CALCULATION WITH UNIT MATCHING:
    For EACH of the {len(ingredients_list)} ingredients:
    - Calculate the IDEAL/REQUIRED quantity for a PROPER meal for {user_context['people']} people
    - model_qty = What the recipe SHOULD have for good portion sizes
-   - DON'T limit yourself to available quantity - calculate what's actually needed!
+   - **CRITICAL: Use the SAME UNIT as the user provided**
    
-   Return format: {{"name": "ingredient_name", "model_qty": "ideal_quantity_needed"}}
+   UNIT MATCHING RULES:
+   - If user provided "2 pieces", you MUST suggest in "pieces" (e.g., "4 pieces")
+   - If user provided "100g", you MUST suggest in "g" (e.g., "250g")
+   - If user provided "1 kg", you MUST suggest in "kg" (e.g., "1.5 kg")
+   - If user provided "2 tsp", you MUST suggest in "tsp" (e.g., "3 tsp")
+   
+   Return format: {{"name": "ingredient_name", "model_qty": "ideal_quantity_with_same_unit"}}
    
    PROPER PORTION GUIDELINES (per person):
-   - Main protein (Paneer/Chicken/Fish): 80-120g per person
-   - Vegetables: 100-150g per person  
+   - Main protein (Paneer/Chicken/Fish): 80-120g per person OR 1-2 pieces per person
+   - Vegetables: 100-150g per person OR 1-2 pieces per person
    - Mushrooms: 50-80g per person
    - Rice/Flour: 80-100g per person
    - Spices: 1-2 tsp total for entire dish
    - Oil: 1-2 tbsp total for cooking
    
    REALISTIC CALCULATION EXAMPLES for {user_context['people']} people:
-    Mushroom (50g per person × 2) = {{"name": "Mushroom", "model_qty": "100g"}}
-    Paneer (100g per person × 3) = {{"name": "Paneer", "model_qty": "300g"}}
-    Broccoli (120g per person × 2) = {{"name": "Broccoli", "model_qty": "240g"}}
-    Cumin (for whole dish) = {{"name": "Cumin", "model_qty": "1.5 tsp"}}
+   - User gave "Mushroom: 100g" → model_qty should be in grams: {{"name": "Mushroom", "model_qty": "200g"}}
+   - User gave "Paneer: 2 pieces" → model_qty should be in pieces: {{"name": "Paneer", "model_qty": "4 pieces"}}
+   - User gave "Fish: 3 pieces" → model_qty should be in pieces: {{"name": "Fish", "model_qty": "6 pieces"}}
+   - User gave "Oil: 50g" → model_qty should be in grams: {{"name": "Oil", "model_qty": "150g"}}
+   - User gave "Salt: 1 tsp" → model_qty should be in tsp: {{"name": "Salt", "model_qty": "2 tsp"}}
    
    IMPORTANT: 
    - Calculate based on PROPER serving sizes, not available quantity
+   - **ALWAYS match the unit type (pieces → pieces, g → g, kg → kg, tsp → tsp)**
    - This helps user understand if they have enough ingredients
-   - model_qty shows the IDEAL amount needed
+   - model_qty shows the IDEAL amount needed in the SAME UNIT FORMAT
    
-   Include ALL {len(ingredients_list)} ingredients with proper model_qty calculations.
+   Include ALL {len(ingredients_list)} ingredients with proper model_qty calculations in matching units.
 
 3. COOKING STEPS - NATURAL LANGUAGE TIME FORMAT:
    
@@ -395,76 +661,6 @@ YOUR TASKS:
    - Sum of all preparation step times should approximately match prep_time
    - Sum of all cooking step times should approximately match cook_time
 
-4. NUTRITION CALCULATION (SCIENTIFIC METHOD):
-   Calculate TOTAL nutrition for ALL {user_context['people']} servings using USDA standards:
-   
-   STEP-BY-STEP CALCULATION:
-   For EACH ingredient in ingredients_used:
-   a) Convert model_qty to grams:
-      - "Xg" = X grams
-      - "X kg" = X × 1000 grams
-      - "X tsp" = X × 5 grams
-      - "X tbsp" = X × 15 grams
-      - "X pieces" (fish/meat) = X × 150 grams (average)
-      - "X pieces" (vegetable) = X × 100 grams (average)
-   
-   b) Use STANDARD NUTRITION VALUES (per 100g):
-      PROTEINS:
-      - Katla/Rohu Fish: 120 kcal, 17.5g protein, 5.2g fat, 0g carbs, 0g fiber
-      - Chicken: 165 kcal, 31g protein, 3.6g fat, 0g carbs, 0g fiber
-      - Paneer: 265 kcal, 18.3g protein, 20.8g fat, 1.2g carbs, 0g fiber
-      - Egg: 155 kcal, 13g protein, 11g fat, 1.1g carbs, 0g fiber
-      
-      VEGETABLES:
-      - Potato: 77 kcal, 2g protein, 0.1g fat, 17g carbs, 2.2g fiber
-      - Tomato: 18 kcal, 0.9g protein, 0.2g fat, 3.9g carbs, 1.2g fiber
-      - Onion: 40 kcal, 1.1g protein, 0.1g fat, 9.3g carbs, 1.7g fiber
-      - Cauliflower: 25 kcal, 1.9g protein, 0.3g fat, 5g carbs, 2g fiber
-      - Broccoli: 34 kcal, 2.8g protein, 0.4g fat, 7g carbs, 2.6g fiber
-      - Capsicum: 20 kcal, 0.9g protein, 0.2g fat, 4.6g carbs, 1.7g fiber
-      - Mushroom: 22 kcal, 3.1g protein, 0.3g fat, 3.3g carbs, 1g fiber
-      
-      GRAINS:
-      - Rice (cooked): 130 kcal, 2.7g protein, 0.3g fat, 28g carbs, 0.4g fiber
-      - Pasta (cooked): 131 kcal, 5g protein, 1.1g fat, 25g carbs, 1.8g fiber
-      - Wheat Flour: 364 kcal, 10.7g protein, 1.7g fat, 76g carbs, 2.7g fiber
-      
-      OILS & FATS:
-      - Oil (any): 884 kcal, 0g protein, 100g fat, 0g carbs, 0g fiber
-      - Butter: 717 kcal, 0.9g protein, 81g fat, 0.1g carbs, 0g fiber
-      
-      SPICES (minimal impact):
-      - Salt: 0 kcal, 0g protein, 0g fat, 0g carbs, 0g fiber
-      - Turmeric/Cumin/etc: ~5 kcal per tsp, negligible macros
-   
-   c) Calculate per ingredient:
-      Ingredient nutrition = (grams / 100) × per-100g-values
-   
-   d) Sum ALL ingredients to get TOTAL nutrition
-   
-   CALCULATION EXAMPLE:
-   If ingredients are:
-   - Katla Fish: 4 pieces = 600g
-     Calories: (600/100) × 120 = 720 kcal
-     Protein: (600/100) × 17.5 = 105g
-     Fat: (600/100) × 5.2 = 31.2g
-   
-   - Oil: 250g
-     Calories: (250/100) × 884 = 2210 kcal
-     Fat: (250/100) × 100 = 250g
-   
-   - Salt: 50g (negligible nutrition)
-   
-   TOTAL:
-   - total_calories: 720 + 2210 = 2930 kcal
-   - protein: 105 + 0 = 105g
-   - fat: 31.2 + 250 = 281.2g
-   
-   FORMAT:
-   - Use decimal precision: "1617.5 kcal", "50.7 g"
-   - NO approximations or ranges
-   - These are TOTAL values for entire dish ({user_context['people']} servings)
-
 RESPONSE FORMAT (strict JSON):
 {{
   "menu_name": "{menu_name}",
@@ -474,9 +670,10 @@ RESPONSE FORMAT (strict JSON):
     "cook_time": "Y min"
   }},
   "ingredients_used": [
-    {{"name": "Paneer", "model_qty": "150g"}},
-    {{"name": "Broccoli", "model_qty": "1 piece"}},
-    ... (all {len(ingredients_list)} ingredients)
+    {{"name": "Katla Fish", "model_qty": "4 pieces"}},
+    {{"name": "Salt", "model_qty": "2 tsp"}},
+    {{"name": "Oil", "model_qty": "150g"}},
+    ... (all {len(ingredients_list)} ingredients with MATCHING UNITS)
   ],
   "steps": {{
     "preparation": [
@@ -488,24 +685,19 @@ RESPONSE FORMAT (strict JSON):
       "Place the fish on the grill and cook for 5 minutes on each side over medium heat until golden brown and crispy",
       "Let the fish rest for 3 minutes on low heat before serving to retain the juices"
     ]
-  }},
-  "nutrition": {{
-    "total_calories": "1617 kcal",
-    "protein": "50.7 g",
-    "fiber": "0.0 g",
-    "fat": "157.5 g",
-    "carbohydrates": "0.0 g"
   }}
 }}
+
+**DO NOT INCLUDE nutrition field in response - it will be calculated separately by Python**
 
 FINAL VERIFICATION:
 - Count ingredients_used array length = {len(ingredients_list)} ✓
 - Every ingredient name matches the available list ✓
 - NO extra ingredients added ✓
+- model_qty uses SAME UNIT TYPE as user's qty ✓
 - model_qty is TOTAL for {user_context['people']} people ✓
 - prep_time + cook_time = {cooking_time} ✓
 - Steps written in natural language with embedded times ✓
-- Nutrition values are TOTAL for all servings ✓
     """
 
     api_url = os.getenv("MISTRAL_API_URL")
@@ -551,8 +743,6 @@ FINAL VERIFICATION:
                 }, 500
         
         # Add user's original qty + keep AI's model_qty
-        # qty = What user has available (from database, never changes)
-        # model_qty = What recipe actually needs (calculated by AI, scales with servings)
         user_ingredients_map = {ing['name'].lower(): ing for ing in user_context['ingredients']}
         
         final_ingredients = []
@@ -568,17 +758,25 @@ FINAL VERIFICATION:
             
             if matched_user_ing:
                 final_ingredients.append({
-                    "name": matched_user_ing['name'],      # Original user name
-                    "qty": matched_user_ing['qty'],        # What user HAS (never changes)
-                    "model_qty": ai_ing.get('model_qty')   # What recipe NEEDS (scales with servings)
+                    "name": matched_user_ing['name'],
+                    "qty": matched_user_ing['qty'],
+                    "model_qty": ai_ing.get('model_qty')
                 })
         
         recipe_details['ingredients_used'] = final_ingredients
         
+        # CALCULATE NUTRITION USING PYTHON (Scientific Method)
+        print("=" * 60)
+        print("NUTRITION CALCULATION - PYTHON SCIENTIFIC METHOD")
+        print("=" * 60)
+        nutrition_data = calculate_nutrition_python(recipe_details['ingredients_used'])
+        recipe_details['nutrition'] = nutrition_data
+        print("=" * 60)
+        
         # Get LLM-based suitability analysis with error handling
         try:
             suitability_analysis = get_llm_suitability_analysis(
-                recipe_details.get('nutrition', {}),
+                nutrition_data,
                 {
                     'menu_name': menu_name,
                     'servings': user_context['people']
@@ -655,11 +853,13 @@ def update_recipe_servings_controller(user_id, data):
             if 'model_qty' in item:
                 item['model_qty'] = scale_quantity(item['model_qty'], scale_factor)
 
-        # Update nutrition values (total values scale with servings)
-        nutrition = recipe_details.get('nutrition', {})
-        for key in ['total_calories', 'protein', 'fiber', 'fat', 'carbohydrates']:
-            if key in nutrition:
-                nutrition[key] = scale_quantity(nutrition[key], scale_factor)
+        # RECALCULATE NUTRITION USING PYTHON (with scaled ingredients)
+        print("=" * 60)
+        print(f"RECALCULATING NUTRITION FOR {new_servings} SERVINGS")
+        print("=" * 60)
+        nutrition_data = calculate_nutrition_python(recipe_details['ingredients_used'])
+        recipe_details['nutrition'] = nutrition_data
+        print("=" * 60)
 
         # Update time (prep time scales slightly with servings)
         time_bd = recipe_details.get('time_breakdown', {})
@@ -671,7 +871,7 @@ def update_recipe_servings_controller(user_id, data):
         # Recalculate suitability with new nutrition values using LLM
         try:
             suitability_analysis = get_llm_suitability_analysis(
-                nutrition,
+                nutrition_data,
                 {
                     'menu_name': recipe_details.get('menu_name', ''),
                     'servings': int(new_servings)

@@ -5,6 +5,7 @@ import requests
 import os
 import json
 import re
+import base64
 from functools import lru_cache
 from database.db import get_db_connection 
 
@@ -151,7 +152,7 @@ class IngredientValidator:
                 "Content-Type": "application/json"
             }
             
-            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=700)
             
             # Debug info
             print(f" USDA API Status: {response.status_code} for '{ingredient_name}'")
@@ -188,7 +189,7 @@ class IngredientValidator:
                 
                 # No results - DON'T reject immediately, let fallback handle it
                 print(f"  USDA: No results for '{ingredient_name}' - trying fallback")
-                return {"checked": False}  # Changed from valid:False to checked:False
+                return {"checked": False}
             
             elif response.status_code == 400:
                 print(f" USDA 400 Error - trying fallback")
@@ -304,6 +305,93 @@ class IngredientValidator:
         return True, None
 
 # ============================================================================
+# GEMINI-POWERED IMAGE GENERATION HELPER
+# ============================================================================
+def generate_image_with_gemini(menu_name):
+    """
+    Generate recipe image using Gemini API to create detailed prompt,
+    then use Pollinations AI for actual image generation
+    """
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    model_name = os.getenv("MODEL_NAME", "gemini-2.0-flash-exp")
+    
+    if not gemini_api_key:
+        print(" Warning: GEMINI_API_KEY not found, using simple image generation")
+        clean_name = "".join(char for char in menu_name if char.isalnum() or char.isspace())
+        search_query = clean_name.replace(" ", ",")
+        return f"https://image.pollinations.ai/prompt/{search_query}%20food%20realistic?width=800&height=600&nologo=true"
+    
+    try:
+        # Step 1: Use Gemini to create a detailed, artistic image prompt
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_api_key}"
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": f"""Create a detailed, professional image prompt for food photography of "{menu_name}".
+
+Requirements:
+- Describe the dish's appearance, colors, textures
+- Mention plating style and garnishing
+- Specify lighting (natural, warm, etc.)
+- Include camera angle (top view, 45-degree, close-up)
+- Keep it under 150 characters for image generation API
+
+Return ONLY the prompt text, nothing else."""
+                }]
+            }],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 200
+            }
+        }
+        
+        print(f" Generating detailed prompt for: {menu_name}")
+        response = requests.post(api_url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            
+            # Extract generated text
+            if 'candidates' in result and len(result['candidates']) > 0:
+                candidate = result['candidates'][0]
+                if 'content' in candidate and 'parts' in candidate['content']:
+                    generated_prompt = candidate['content']['parts'][0].get('text', '').strip()
+                    
+                    if generated_prompt:
+                        # Step 2: Use the detailed prompt with Pollinations AI
+                        # Clean and URL-encode the prompt
+                        clean_prompt = generated_prompt.replace('\n', ' ').replace('"', '').strip()
+                        # Limit to 150 chars for URL safety
+                        if len(clean_prompt) > 150:
+                            clean_prompt = clean_prompt[:147] + "..."
+                        
+                        encoded_prompt = requests.utils.quote(clean_prompt)
+                        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=600&nologo=true"
+                        
+                        print(f" ✓ Generated prompt: {clean_prompt[:80]}...")
+                        print(f" ✓ Image URL created successfully")
+                        return image_url
+        
+        # Fallback if Gemini fails
+        print(f" Gemini prompt generation failed, using simple method")
+        clean_name = "".join(char for char in menu_name if char.isalnum() or char.isspace())
+        search_query = clean_name.replace(" ", ",")
+        return f"https://image.pollinations.ai/prompt/{search_query}%20food%20realistic?width=800&height=600&nologo=true"
+        
+    except Exception as e:
+        print(f" Gemini error: {str(e)}, using fallback")
+        clean_name = "".join(char for char in menu_name if char.isalnum() or char.isspace())
+        search_query = clean_name.replace(" ", ",")
+        return f"https://image.pollinations.ai/prompt/{search_query}%20food%20realistic?width=800&height=600&nologo=true"
+
+# ============================================================================
 # MAIN RECIPE CONTROLLER - IMPROVED JSON PARSING & PROMPT
 # ============================================================================
 
@@ -345,7 +433,7 @@ def generate_recipe_controller(user_id, data):
             cursor.execute(check_sql, (user_id,))
             existing_record = cursor.fetchone()
             
-            cursor.fetchall()  
+            cursor.fetchall()
 
             if existing_record:
                 update_sql = """
@@ -364,7 +452,7 @@ def generate_recipe_controller(user_id, data):
                 cursor.execute(insert_sql, (user_id, ingredients_json, cuisine, people, cooking_time, preference))
             
             conn.commit()
-            cursor.close() 
+            cursor.close()
         except Exception as db_err:
             print(f"Database Error (user_queries): {str(db_err)}")
 
@@ -414,7 +502,7 @@ CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before 
 
     try:
         print(f" Generating {dynamic_limit} recipes...")
-        response = requests.post(api_url, json=payload, headers=headers, timeout=700)
+        response = requests.post(api_url, json=payload, headers=headers, timeout=1000)
         
         if response.status_code != 200:
             print(f" Mistral API error: {response.status_code}")
@@ -510,7 +598,6 @@ CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before 
                                 recipes = value
                                 print(f" Format: Dict with list in key '{key}'")
                                 break
-                            # Skip if it's a list of strings/other data
         
         # Validation
         if not isinstance(recipes, list) or len(recipes) == 0:
@@ -555,12 +642,11 @@ CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before 
 
         print(f" Successfully cleaned {len(recipes)} recipes")
 
-        # Add images
+        # Generate images using Gemini API
+        print(" Generating images using Gemini API...")
         for recipe in recipes:
-            name = recipe.get('menu_name', 'food')
-            clean_name = "".join(char for char in name if char.isalnum() or char.isspace())
-            search_query = clean_name.replace(" ", ",")
-            recipe['image_url'] = f"https://image.pollinations.ai/prompt/{search_query}%20food%20realistic?width=800&height=600&nologo=true"
+            menu_name = recipe.get('menu_name', 'food')
+            recipe['image_url'] = generate_image_with_gemini(menu_name)
         
         # Save to database
         if conn:
@@ -577,7 +663,7 @@ CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before 
                     user_id, ingredients_json, cuisine, people, cooking_time, preference, all_recipes_json
                 ))
                 conn.commit()
-                save_cursor.fetchall()  
+                save_cursor.fetchall()
                 save_cursor.close()
                 print(" Saved to database")
             except Exception as e_db:
@@ -605,4 +691,4 @@ CRITICAL: Return ONLY the JSON array with {dynamic_limit} items. No text before 
     except Exception as e:
         if conn: conn.close()
         print(f" Error: {str(e)}")
-        return {"status": "error", "message": f"Recipe generation failed: {str(e)}"}, 500 
+        return {"status": "error", "message": f"Recipe generation failed: {str(e)}"}, 500
