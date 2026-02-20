@@ -67,6 +67,7 @@ def get_community_feed_controller():
     try:
         cursor = conn.cursor(dictionary=True)
 
+        # Updated query to JOIN with the 'users' table
         query = """
             SELECT 
                 cp.id AS post_id, 
@@ -76,9 +77,10 @@ def get_community_feed_controller():
                 cp.created_at,
                 sm.menu_name,
                 sm.full_details,
-                sm.user_id AS shared_by
+                u.username AS shared_by  
             FROM community_posts cp
             INNER JOIN saved_meals sm ON cp.meal_id = sm.id
+            INNER JOIN users u ON cp.user_id = u.user_id  
             ORDER BY cp.created_at DESC
         """
         cursor.execute(query)
@@ -95,7 +97,7 @@ def get_community_feed_controller():
                 "image_url": row['image_url'],
                 "created_at": row['created_at'],
                 "menu_name": row['menu_name'],
-                "shared_by": row['shared_by'],
+                "shared_by": row['shared_by'], 
                 "meal_details": meal_details  
             })
 
@@ -110,5 +112,4 @@ def get_community_feed_controller():
 
     except Exception as e:
         if conn: conn.close()
-        return {"status": "error", "message": f"Failed to fetch feed: {str(e)}"}, 500
-    
+        return {"status": "error", "message": f"Failed to fetch feed: {str(e)}"}, 500 
