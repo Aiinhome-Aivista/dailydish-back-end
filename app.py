@@ -12,6 +12,12 @@ from controller.community_controller import (
     share_to_community_controller, 
     get_community_feed_controller
 )
+from services.captcha_service import generate_captcha
+from controller.admin_register_login_controller import (
+    admin_register_controller,
+    admin_login_controller
+)
+from middleware.admin_auth_middleware import admin_token_required
 
 app = Flask(__name__)
 CORS(app) 
@@ -128,5 +134,27 @@ def get_community_feed():
     response, status_code = get_community_feed_controller()
     return jsonify(response), status_code
 
+@app.route("/captcha", methods=["GET"])
+def get_captcha():
+    captcha_id, captcha_text = generate_captcha()
+
+    return jsonify({
+        "captcha_id": captcha_id,
+        "captcha": captcha_text  
+    })
+
+@app.route('/admin/register', methods=['POST'])
+def admin_register():
+    data = request.get_json()
+    response, status_code = admin_register_controller(data)
+    return jsonify(response), status_code
+
+
+@app.route('/admin/login', methods=['POST'])
+def admin_login():
+    data = request.get_json()
+    response, status_code = admin_login_controller(data)
+    return jsonify(response), status_code
+
 if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=3029)
