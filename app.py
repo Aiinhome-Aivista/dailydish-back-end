@@ -9,8 +9,15 @@ from controller.doctor_foody_controller import doctor_foody_chat_controller
 from controller.save_recipe_controller import delete_saved_recipe_controller, get_saved_recipes_controller, save_menu_controller
 from controller.get_recipe_details_controller import get_recipe_details_controller, update_recipe_servings_controller 
 from controller.community_controller import (
-    share_to_community_controller, 
-    get_community_feed_controller
+    get_rejected_posts_controller,
+    get_user_community_posts_controller,
+    share_to_community_controller,
+    get_community_feed_controller,
+    get_pending_posts_controller,
+    approve_post_controller,
+    reject_post_controller,
+    edit_post_controller,
+    delete_post_controller
 )
 from services.captcha_service import generate_captcha
 from controller.admin_register_login_controller import (
@@ -154,6 +161,66 @@ def admin_register():
 def admin_login():
     data = request.get_json()
     response, status_code = admin_login_controller(data)
+    return jsonify(response), status_code
+
+@app.route('/community/edit-post', methods=['POST'])
+@token_required
+def edit_post(current_user_id):
+    data = request.form.to_dict()
+    post_id = data.get("post_id")
+    image = request.files.get("image")
+    response, status_code = edit_post_controller(current_user_id, post_id, data, image)
+    return jsonify(response), status_code
+
+@app.route('/community/delete-post', methods=['POST'])
+@token_required
+def delete_post(current_user_id):
+    data = request.get_json()
+    post_id = data.get("post_id")
+    response, status_code = delete_post_controller(post_id)
+    return jsonify(response), status_code
+
+@app.route('/admin/community/pending', methods=['GET'])
+@admin_token_required
+def get_pending_posts(current_admin_id):
+    response, status_code = get_pending_posts_controller()
+    return jsonify(response), status_code
+
+@app.route('/admin/community/approve', methods=['POST'])
+@admin_token_required
+def approve_post(current_admin_id):
+    data = request.get_json()
+    post_id = data.get("post_id")
+    response, status_code = approve_post_controller(post_id)
+    return jsonify(response), status_code
+
+@app.route('/admin/community/reject', methods=['POST'])
+@admin_token_required
+def reject_post(current_admin_id):
+    data = request.get_json()
+    post_id = data.get("post_id")
+    reason = data.get("reason")
+    response, status_code = reject_post_controller(post_id, reason)
+    return jsonify(response), status_code
+
+@app.route('/admin/community/delete', methods=['POST'])
+@admin_token_required
+def admin_delete_post(current_admin_id):
+    data = request.get_json()
+    post_id = data.get("post_id")
+    response, status_code = delete_post_controller(post_id)
+    return jsonify(response), status_code
+
+@app.route('/admin/community/rejected', methods=['GET'])
+@admin_token_required
+def get_rejected_posts(current_admin_id):
+    response, status_code = get_rejected_posts_controller()
+    return jsonify(response), status_code
+
+@app.route('/community/my-posts', methods=['GET'])
+@token_required
+def get_my_posts(current_user_id):
+    response, status_code = get_user_community_posts_controller(current_user_id)
     return jsonify(response), status_code
 
 if __name__ == '__main__':
